@@ -45,6 +45,8 @@ import { RecorderView } from "./components/RecorderView";
 import { ClipStudioView } from "./components/ClipStudioView";
 import { WaveDotBackground, type WavePreset } from "./components/WaveDotBackground";
 import { AutoUpdateBanner } from "./components/AutoUpdateBanner";
+import { BootSplash } from "./components/BootSplash";
+import { WindowControls, handleTitlebarMouseDown } from "./components/WindowControls";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { MatchDetailSkeleton, ProfileSkeleton } from "./components/Skeletons";
 import {
@@ -96,7 +98,10 @@ export default function App() {
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<ApiClientError | null>(null);
 
-  // Instant Replay sidebar status & global clip toast
+  // Boot splash & Instant Replay sidebar status & global clip toast
+  const [showBootSplash, setShowBootSplash] = useState(true);
+  const [isAppReady, setIsAppReady] = useState(false);
+  const [bootEncoderName, setBootEncoderName] = useState<string | null>(null);
   const [isRecordingActive, setIsRecordingActive] = useState(false);
   const [saveHotkeyLabel, setSaveHotkeyLabel] = useState<string | undefined>(undefined);
   const [savedClipNotice, setSavedClipNotice] = useState<{
@@ -108,15 +113,21 @@ export default function App() {
 
   // Hydrate persistent Tauri store + valorant-api.com static assets + Replay status on startup
   useEffect(() => {
-    hydrateFromTauriStore().then(({ settings: s, history: h, favorites: f }) => {
-      setSettings(s);
-      setSearchRegion(s.defaultRegion);
-      setHistory(h);
-      setFavorites(f);
+    const storePromise = hydrateFromTauriStore().then(
+      ({ settings: s, history: h, favorites: f }) => {
+        setSettings(s);
+        setSearchRegion(s.defaultRegion);
+        setHistory(h);
+        setFavorites(f);
+      },
+    );
+
+    const assetsPromise = loadValorantAssets().then((catalog) => {
+      setAssets(catalog);
     });
 
-    loadValorantAssets().then((catalog) => {
-      setAssets(catalog);
+    void Promise.allSettled([storePromise, assetsPromise]).then(() => {
+      setIsAppReady(true);
     });
 
     const syncReplayBadge = () => {
@@ -124,6 +135,7 @@ export default function App() {
         .then((st) => {
           setIsRecordingActive(st.config.enabled && !st.error);
           setSaveHotkeyLabel(st.hotkeyLabels.saveClip);
+          setBootEncoderName(st.encoderName);
         })
         .catch(() => {});
     };
@@ -322,7 +334,16 @@ export default function App() {
       : route;
 
   return (
-    <div className="relative h-screen w-screen overflow-hidden bg-[#000000] text-[#ededed] flex">
+    <div className="relative h-screen w-screen overflow-hidden bg-[#000000] text-[#ededed] flex ring-1 ring-inset ring-white/[0.08]">
+      {/* Cinematic 3D Vortex & HUD Boot Loading Screen */}
+      {showBootSplash && (
+        <BootSplash
+          ready={isAppReady}
+          encoderName={bootEncoderName}
+          onComplete={() => setShowBootSplash(false)}
+        />
+      )}
+
       {/* Interactive 3D Wave Dot Background across all tabs */}
       <WaveDotBackground preset={activeWavePreset} />
 
@@ -357,11 +378,14 @@ export default function App() {
         }}
       />
 
-      {/* Right Column: Persistent Top Search Header + Scrollable Main Content */}
+      {/* Right Column: Unified Pure-Black Custom Titlebar + Search Header + Main Content */}
       <div className="relative z-10 flex-1 flex flex-col min-w-0 h-full">
-        <AutoUpdateBanner />
-        {/* Persistent Top Search Bar (§5) */}
-        <header className="h-14 px-6 flex items-center justify-between gap-4 vt-hairline-b bg-black/65 backdrop-blur-md shrink-0">
+        {/* Persistent Top Search Bar + Frameless Pure-Black Window Controls */}
+        <header
+          data-tauri-drag-region
+          onMouseDown={handleTitlebarMouseDown}
+          className="h-14 pl-6 pr-0 flex items-center justify-between gap-4 vt-hairline-b bg-[#000000] shrink-0 select-none"
+        >
           <SearchBar
             variant="header"
             initialQuery={headerQuery}
@@ -371,10 +395,15 @@ export default function App() {
             isLoading={isProfileLoading}
           />
 
-          <div className="hidden md:flex items-center gap-2 text-[11px] text-[#5c5c5c] font-num shrink-0">
-            <span>REGION: {searchRegion.toUpperCase()}</span>
+          <div className="flex items-center h-full gap-4 shrink-0">
+            <div className="hidden md:flex items-center gap-2 text-[11px] text-[#5c5c5c] font-num pointer-events-none">
+              <span>REGION: {searchRegion.toUpperCase()}</span>
+            </div>
+            <WindowControls />
           </div>
         </header>
+
+        <AutoUpdateBanner />
 
         {/* Main Content */}
         <main className="flex-1 overflow-y-auto bg-transparent">

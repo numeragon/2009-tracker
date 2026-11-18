@@ -2,6 +2,7 @@ import { Disc, Film, Home, Pin, Radio, Settings, Trophy, X } from "lucide-react"
 import type { Region, SavedPlayerEntry, ValorantAssetsCatalog } from "../types/valorant";
 import { playerKey } from "../lib/storage";
 import { resolveTierAsset } from "../lib/valorantAssets";
+import { handleTitlebarMouseDown } from "./WindowControls";
 
 export type AppRoute =
   | "home"
@@ -70,8 +71,12 @@ export function Sidebar({
 
   return (
     <aside className="relative z-10 w-60 shrink-0 bg-[#0a0a0a]/82 backdrop-blur-md vt-hairline-r flex flex-col h-full select-none">
-      {/* App Title */}
-      <div className="h-14 px-5 flex items-center justify-between vt-hairline-b shrink-0">
+      {/* App Title (Pure #000000 unified draggable titlebar zone) */}
+      <div
+        data-tauri-drag-region
+        onMouseDown={handleTitlebarMouseDown}
+        className="h-14 px-5 flex items-center justify-between bg-[#000000] vt-hairline-b shrink-0"
+      >
         <button
           type="button"
           onClick={() => onNavigate("home")}

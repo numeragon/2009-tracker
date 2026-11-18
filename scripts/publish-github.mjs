@@ -134,7 +134,7 @@ async function main() {
         tag_name: tag,
         target_commitish: "main",
         name: `#2009 tracker ${tag}`,
-        body: `# #2009 tracker ${tag}\n- リージョン別リーダーボード（上位15,000名表示・ティア別RRボーダー・Riot ID順位検索）を実装\n- 100% GPU インスタントリプレイ録画機能を追加（F9で直近プレイを無劣化MP4保存・3ch音声分離ミキサー・トレイ常駐）\n- マルチトラック・クリップ編集スタジオ＆GPU高速書き出し（Discord向けサイズ指定対応）を追加\n- 画面右クリック時のブラウザメニュー表示を抑制`,
+        body: `# #2009 tracker ${tag}\n- 起動時の3Dワープパーティクル＆サイバーHUDローディングアニメーション画面（BootSplash）を追加\n- ウィンドウ上部のタイトルバー（最小化・最大化・閉じるボタン＆ドラッグ領域）を純黒（#000000）カスタムヘッダーに統一`,
         draft: false,
         prerelease: false,
       }),
@@ -171,7 +171,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `#2009 tracker v${version} - リーダーボード＆インスタントリプレイ録画・クリップ編集追加`,
+    notes: `#2009 tracker v${version} - 起動3Dローディング演出＆純黒カスタムタイトルバー追加`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {

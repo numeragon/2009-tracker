@@ -3,6 +3,18 @@ mod replay;
 
 use tauri::Manager;
 
+#[tauri::command]
+fn window_close_or_tray(app: tauri::AppHandle) {
+    if replay::host::should_minimize_to_tray(&app) {
+        if let Some(w) = app.get_webview_window("main") {
+            let _ = w.hide();
+        }
+    } else {
+        replay::host::shutdown_tray(&app);
+        app.exit(0);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let start_in_background = std::env::args().any(|a| a == "--background");
@@ -36,6 +48,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            window_close_or_tray,
             live_match::fetch_live_match,
             replay::host::replay_get_state,
             replay::host::replay_update_config,
