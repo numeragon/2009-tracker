@@ -13,6 +13,23 @@ const args = process.argv.slice(2);
 const skipBuild = args.includes("--skip-build");
 const nextVersionArg = args.find((a) => /^\d+\.\d+\.\d+$/.test(a));
 
+function getTokenFromGitCredentialManager() {
+  try {
+    const res = spawnSync("git", ["credential", "fill"], {
+      cwd: ROOT,
+      input: "protocol=https\nhost=github.com\n\n",
+      encoding: "utf8",
+    });
+    if (res.status === 0 && res.stdout) {
+      const m = res.stdout.match(/^password=(.+)$/m);
+      if (m) return m[1].trim();
+    }
+  } catch {
+    // Ignore
+  }
+  return "";
+}
+
 function updateVersionStrings(newVer) {
   const pkgPath = path.join(ROOT, "package.json");
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
@@ -49,11 +66,12 @@ const token =
   process.env.GH_TOKEN ||
   (process.env.GITHUB_TOKEN_FILE && fs.existsSync(process.env.GITHUB_TOKEN_FILE)
     ? fs.readFileSync(process.env.GITHUB_TOKEN_FILE, "utf8").trim()
-    : "");
+    : "") ||
+  getTokenFromGitCredentialManager();
 
 if (!token) {
   console.error(
-    "ERROR: GITHUB_TOKEN environment variable is required to publish releases to GitHub.",
+    "ERROR: GitHub token not found in GITHUB_TOKEN or Git Credential Manager.",
   );
   process.exit(1);
 }
@@ -68,6 +86,19 @@ if (!skipBuild) {
     process.exit(buildRes.status ?? 1);
   }
 }
+
+// Commit and push source updates if any
+spawnSync("git", ["add", "-A"], { cwd: ROOT, stdio: "inherit" });
+const diffCheck = spawnSync("git", ["status", "--porcelain"], { cwd: ROOT, encoding: "utf8" });
+if (diffCheck.stdout && diffCheck.stdout.trim().length > 0) {
+  spawnSync("git", ["commit", "-m", `chore: release ${tag}`], { cwd: ROOT, stdio: "inherit" });
+}
+const b64 = Buffer.from(`x-access-token:${token}`, "ascii").toString("base64");
+spawnSync(
+  "git",
+  ["-c", `http.https://github.com/.extraheader=AUTHORIZATION: basic ${b64}`, "push", "origin", "main"],
+  { cwd: ROOT, stdio: "inherit" },
+);
 
 async function ghApi(url, options = {}) {
   const res = await fetch(url, {
@@ -90,7 +121,6 @@ async function ghApi(url, options = {}) {
 async function main() {
   console.log(`[github] Publishing release ${tag} to ${OWNER}/${REPO} ...`);
 
-  // Find or create release by tag
   let release = null;
   try {
     release = await ghApi(
@@ -102,6 +132,7 @@ async function main() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         tag_name: tag,
+        target_commitish: "main",
         name: `Valorant Tracker ${tag}`,
         body: `Valorant Tracker ${tag} 自動アップデート対応リリース`,
         draft: false,
@@ -110,7 +141,6 @@ async function main() {
     });
   }
 
-  // Delete existing assets with same names if re-uploading
   const existingAssets = release.assets || [];
   const filesToUpload = [];
 

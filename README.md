@@ -1,49 +1,33 @@
 # Valorant Tracker
 
-VALORANT のプレイヤー戦績・進行中の試合（ライブマッチ）を閲覧できる個人利用向け Windows デスクトップアプリ（Tauri 2 + React + TypeScript + Vite）です。
+VALORANT のプレイヤー戦績・進行中の試合（ライブマッチ）を閲覧できる Windows デスクトップアプリ（Tauri 2 + React + TypeScript + Vite）です。
 
-## 主な機能
+## 完成品フォルダ（ビルド出力先）
 
-- **APIキー組み込み済み**：起動後すぐに設定不要で検索・ライブマッチ取得が可能（設定画面から別のカスタムAPIキーへの切り替えも可能）
-- **インタラクティブ 3D ウェーブドット背景**：
-  - 全タブに対応したマウス連動 3D ドットアニメーション（カーソル移動で3D視点チルト＆ドット隆起、クリックで3Dショックウェーブ波紋、タブごとに波形が滑らかに変化）
-  - ウィンドウ最小化時は自動で描画停止し、ゲーム中の CPU / GPU 負荷ゼロで動作
-- **試合中（ライブマッチ）情報取得**：
-  - 起動中の VALORANT クライアントからエージェント選択中・試合進行中のマッチを自動検出
-  - 味方・相手チーム全員の使用エージェント、現在ランク・RR、ピークランク、**K/D（および HS%）**、今シーズン勝率・試合数を一覧表示（15秒ごとの自動更新対応）
-- **プレイヤー検索**：Riot ID（`名前#タグ`）での検索、検索履歴（直近10件）、お気に入り（ピン留め）保存
-- **プロフィール概要**：
-  - プレイヤーカード、アカウントレベル、リージョン表示
-  - 現在ランク（アイコン・ランク名・RR・直近RR増減）とピークランク
-  - シーズン勝敗数・勝率
-  - 直近コンペティティブ最大20試合のサマリースタッツ（K/D、勝率、HS%、平均ACS、平均ADR、合計K/D/A）
-  - RR推移折れ線グラフ（Recharts）
-- **試合履歴・試合詳細**：直近20試合のリスト表示、モード別フィルタ、両チーム全10人のスコアボード、ラウンド推移
+ビルド結果はすべてプロジェクト直下の **`完成品`** フォルダ（`C:\Users\X280\Documents\vlrt-tracker\完成品`）に自動出力されます：
+
+- `Valorant Tracker (単体起動版).exe`（インストール不要・ポータブル版）
+- `Valorant Tracker_<version>_x64-setup.exe`（日本語対応インストーラー）
+- `Valorant Tracker_<version>_x64_en-US.msi`（MSI インストーラー）
+- `latest.json`（自動アップデート配信マニフェスト）
 
 ---
 
-## ビルド済みファイル（すぐ使える実行ファイル）
+## 自動アップデートと新バージョンの配信方法
 
-- **単体実行版（インストール不要 `.exe`）**  
-  `src-tauri\target\release\valorant-tracker.exe`
-- **日本語対応インストーラー（NSIS Setup `.exe`）**  
-  `src-tauri\target\release\bundle\nsis\Valorant Tracker_0.1.0_x64-setup.exe`
-- **MSI インストーラー**  
-  `src-tauri\target\release\bundle\msi\Valorant Tracker_0.1.0_x64_en-US.msi`
+アプリ起動時（および30分ごと・設定画面の手動確認ボタン）に GitHub リポジトリ [`numeragon/2009-tracker`](https://github.com/numeragon/2009-tracker/releases) の最新リリースを確認し、新バージョンがあれば**自動でダウンロード・インストールして再起動**します。
 
----
+### 新しいバージョンをビルド＆GitHubへ自動アップロードするコマンド
 
-## 開発・再ビルド手順
-
-PowerShell で実行する場合：
+機能追加や変更を行ったあと、バージョン番号（例: `0.2.0`）を指定して以下を1行実行するだけで、**バージョン更新 → 署名付きビルド → `完成品` フォルダ出力 → GitHub Release への自動アップロード**まで完了します：
 
 ```powershell
 cd C:\Users\X280\Documents\vlrt-tracker
-npm.cmd install
+npm.cmd run publish:update -- 0.2.0
+```
 
-# 開発モード起動
-npm.cmd run tauri dev
+ローカルで `完成品` フォルダへのビルドだけ行う場合：
 
-# リリースビルド（.exe / インストーラー生成）
-npx.cmd tauri build
+```powershell
+npm.cmd run build:release
 ```
