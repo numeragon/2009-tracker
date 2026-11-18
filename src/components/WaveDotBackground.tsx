@@ -7,6 +7,8 @@ export type WavePreset =
   | "clips"
   | "overview"
   | "matches"
+  | "agents"
+  | "maps"
   | "match-detail"
   | "leaderboard"
   | "settings";
@@ -89,6 +91,28 @@ const PRESETS: Record<WavePreset, PresetConfig> = {
     speed: 1.05,
     radialPulse: 0.0,
     tint: [232, 232, 236],
+  },
+  agents: {
+    pitch: 0.55,
+    yaw: -0.2,
+    amp1: 26,
+    amp2: 17,
+    freqX: 0.08,
+    freqZ: 0.095,
+    speed: 0.92,
+    radialPulse: 0.0,
+    tint: [236, 236, 240],
+  },
+  maps: {
+    pitch: 0.5,
+    yaw: 0.2,
+    amp1: 18,
+    amp2: 13,
+    freqX: 0.12,
+    freqZ: 0.08,
+    speed: 0.74,
+    radialPulse: 0.0,
+    tint: [234, 234, 234],
   },
   "match-detail": {
     pitch: 0.64,

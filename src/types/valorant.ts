@@ -243,6 +243,40 @@ export interface RrHistoryPoint {
   mapName?: string;
 }
 
+export interface AgentStatItem {
+  agentId: string;
+  agentName: string;
+  matches: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  winRate: number;
+  kills: number;
+  deaths: number;
+  assists: number;
+  kd: number;
+  avgAcs: number;
+  avgAdr: number;
+  hsPercent: number;
+}
+
+export interface MapStatItem {
+  mapId: string;
+  mapName: string;
+  matches: number;
+  wins: number;
+  losses: number;
+  draws: number;
+  winRate: number;
+  kills: number;
+  deaths: number;
+  assists: number;
+  kd: number;
+  avgAcs: number;
+  avgAdr: number;
+  hsPercent: number;
+}
+
 export interface MatchSummaryItem {
   matchId: string;
   startedAtIso: string;

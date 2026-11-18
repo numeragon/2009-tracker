@@ -134,7 +134,7 @@ async function main() {
         tag_name: tag,
         target_commitish: "main",
         name: `#2009 tracker ${tag}`,
-        body: `# #2009 tracker ${tag}\n- 起動時の3Dワープパーティクル＆サイバーHUDローディングアニメーション画面（BootSplash）を追加\n- ウィンドウ上部のタイトルバー（最小化・最大化・閉じるボタン＆ドラッグ領域）を純黒（#000000）カスタムヘッダーに統一`,
+        body: `# #2009 tracker ${tag}\n- プロフィールに「エージェント別」「マップ別」スタッツタブを追加（使用回数・勝率・W/L・K/D・ACS・HS%）\n- 直近の取得済み試合から自動集計し、追加のAPI呼び出しなしで表示\n- 起動画面を軽量なターミナル風 CLI 表示に刷新\n- ライブマッチに保存タブ機能を追加（試合ロビーのスナップショットを保持・切替）\n- README に起動方法・APIキー設定手順を追記`,
         draft: false,
         prerelease: false,
       }),
@@ -171,7 +171,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `#2009 tracker v${version} - 起動3Dローディング演出＆純黒カスタムタイトルバー追加`,
+    notes: `#2009 tracker v${version} - エージェント別・マップ別スタッツ追加、起動画面とライブマッチ保存タブを改善`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {

@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Radio, RefreshCw, Server, ShieldAlert } from "lucide-react";
+import {
+  Bookmark,
+  Check,
+  Clock,
+  Radio,
+  RefreshCw,
+  Server,
+  ShieldAlert,
+  X,
+} from "lucide-react";
 import type {
   LiveMatchPlayerRaw,
   LiveMatchResponse,
@@ -18,6 +27,80 @@ import {
   resolveMapAsset,
   resolveTierAsset,
 } from "../lib/valorantAssets";
+
+const SAVED_LIVE_TABS_KEY = "vt:saved_live_tabs_v1";
+const LAST_LIVE_CACHE_KEY = "vt:last_live_session_v1";
+const MAX_SAVED_TABS = 12;
+
+export interface SavedLiveMatchTab {
+  id: string;
+  matchId: string | null;
+  label: string;
+  savedAt: number;
+  region: Region;
+  liveData: LiveMatchResponse;
+  ranksByPuuid: Record<string, LivePlayerRankInfo | undefined>;
+}
+
+function loadSavedTabsFromStorage(): SavedLiveMatchTab[] {
+  try {
+    const raw = localStorage.getItem(SAVED_LIVE_TABS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as SavedLiveMatchTab[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveTabsToStorage(tabs: SavedLiveMatchTab[]) {
+  try {
+    localStorage.setItem(SAVED_LIVE_TABS_KEY, JSON.stringify(tabs.slice(0, MAX_SAVED_TABS)));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function loadLastLiveCache(): {
+  liveData: LiveMatchResponse | null;
+  ranksByPuuid: Record<string, LivePlayerRankInfo | undefined>;
+} {
+  try {
+    const raw = localStorage.getItem(LAST_LIVE_CACHE_KEY);
+    if (!raw) return { liveData: null, ranksByPuuid: {} };
+    const parsed = JSON.parse(raw) as {
+      liveData?: LiveMatchResponse | null;
+      ranksByPuuid?: Record<string, LivePlayerRankInfo | undefined>;
+    };
+    return {
+      liveData: parsed.liveData ?? null,
+      ranksByPuuid: parsed.ranksByPuuid ?? {},
+    };
+  } catch {
+    return { liveData: null, ranksByPuuid: {} };
+  }
+}
+
+function saveLastLiveCache(
+  liveData: LiveMatchResponse | null,
+  ranksByPuuid: Record<string, LivePlayerRankInfo | undefined>,
+) {
+  try {
+    localStorage.setItem(
+      LAST_LIVE_CACHE_KEY,
+      JSON.stringify({ liveData, ranksByPuuid }),
+    );
+  } catch {
+    // Ignore
+  }
+}
+
+function formatSavedTime(ts: number): string {
+  const d = new Date(ts);
+  return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(
+    d.getMinutes(),
+  ).padStart(2, "0")}`;
+}
 
 interface LiveTeamTableProps {
   title: string;
@@ -229,7 +312,9 @@ function LiveTeamTable({
                           {rank.kd.toFixed(2)}
                         </div>
                         <div className="text-[11px] text-[#5c5c5c]">
-                          {rank.hsPercent !== null ? `HS ${rank.hsPercent.toFixed(0)}%` : `${rank.kdSampleSize}戦`}
+                          {rank.hsPercent !== null
+                            ? `HS ${rank.hsPercent.toFixed(0)}%`
+                            : `${rank.kdSampleSize}戦`}
                         </div>
                       </div>
                     ) : (
@@ -268,6 +353,7 @@ interface LiveMatchViewProps {
   defaultRegion: Region;
   apiKey: string;
   assets: ValorantAssetsCatalog;
+  isActiveTab?: boolean;
   onSelectPlayer: (name: string, tag: string, region: Region) => void;
 }
 
@@ -275,146 +361,383 @@ export function LiveMatchView({
   defaultRegion,
   apiKey,
   assets,
+  isActiveTab = true,
   onSelectPlayer,
 }: LiveMatchViewProps) {
-  const [liveData, setLiveData] = useState<LiveMatchResponse | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isRanksLoading, setIsRanksLoading] = useState(false);
-  const [ranksByPuuid, setRanksByPuuid] = useState<Record<string, LivePlayerRankInfo | undefined>>(
-    {},
+  const initialCache = useRef(loadLastLiveCache());
+
+  const [liveData, setLiveData] = useState<LiveMatchResponse | null>(
+    () => initialCache.current.liveData,
   );
+  const [ranksByPuuid, setRanksByPuuid] = useState<
+    Record<string, LivePlayerRankInfo | undefined>
+  >(() => initialCache.current.ranksByPuuid);
+
+  const [savedTabs, setSavedTabs] = useState<SavedLiveMatchTab[]>(() =>
+    loadSavedTabsFromStorage(),
+  );
+  // "live" = realtime tab, otherwise id of SavedLiveMatchTab
+  const [selectedTabId, setSelectedTabId] = useState<string>("live");
+  const [justSavedToast, setJustSavedToast] = useState(false);
+
+  const [isLoading, setIsLoading] = useState(initialCache.current.liveData === null);
+  const [isRanksLoading, setIsRanksLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
 
   const fetchSeqRef = useRef(0);
+  const ranksRef = useRef(ranksByPuuid);
+  useEffect(() => {
+    ranksRef.current = ranksByPuuid;
+  }, [ranksByPuuid]);
 
-  const loadLiveMatch = useCallback(async () => {
-    const seq = ++fetchSeqRef.current;
-    setIsLoading(true);
-    setErrorText(null);
+  // Persist current live session cache whenever liveData or ranksByPuuid updates
+  useEffect(() => {
+    if (liveData) {
+      saveLastLiveCache(liveData, ranksByPuuid);
+    }
+  }, [liveData, ranksByPuuid]);
 
-    try {
-      const resp = await fetchLiveMatchFromClient(defaultRegion);
-      if (seq !== fetchSeqRef.current) return;
-      setLiveData(resp);
-      setIsLoading(false);
-
-      if ((resp.status === "IN_GAME" || resp.status === "PREGAME") && resp.players.length > 0) {
-        const effectiveRegion = normalizeRegion(resp.detectedRegion, defaultRegion);
-        setIsRanksLoading(true);
-
-        // Fetch rank + K/D info in gentle batches of 3 to avoid rate limit spikes
-        const batchSize = 3;
-        for (let i = 0; i < resp.players.length; i += batchSize) {
-          if (seq !== fetchSeqRef.current) return;
-          const slice = resp.players.slice(i, i + batchSize);
-          const results = await Promise.all(
-            slice.map(async (p) => {
-              const info = await fetchPlayerRankByPuuid(p.puuid, effectiveRegion, apiKey);
-              return [p.puuid.toLowerCase(), info ?? undefined] as const;
-            }),
-          );
-          if (seq !== fetchSeqRef.current) return;
-          setRanksByPuuid((prev) => {
-            const next = { ...prev };
-            for (const [k, v] of results) {
-              if (v) next[k] = v;
-            }
-            return next;
-          });
-        }
-        if (seq === fetchSeqRef.current) {
-          setIsRanksLoading(false);
+  // Also keep any matching saved tab's player stats enriched if background rank fetches complete
+  useEffect(() => {
+    if (!liveData?.matchId) return;
+    setSavedTabs((prev) => {
+      const idx = prev.findIndex((t) => t.matchId && t.matchId === liveData.matchId);
+      if (idx < 0) return prev;
+      const target = prev[idx];
+      const mergedRanks = { ...target.ranksByPuuid };
+      let changed = false;
+      for (const p of target.liveData.players) {
+        const k = p.puuid.toLowerCase();
+        if (!mergedRanks[k] && ranksByPuuid[k]) {
+          mergedRanks[k] = ranksByPuuid[k];
+          changed = true;
         }
       }
-    } catch (err) {
-      if (seq !== fetchSeqRef.current) return;
-      setErrorText(err instanceof Error ? err.message : String(err));
-      setIsLoading(false);
-    }
-  }, [apiKey, defaultRegion]);
+      if (!changed) return prev;
+      const next = [...prev];
+      next[idx] = { ...target, ranksByPuuid: mergedRanks };
+      saveTabsToStorage(next);
+      return next;
+    });
+  }, [liveData, ranksByPuuid]);
 
+  const loadLiveMatch = useCallback(
+    async (options?: { manual?: boolean }) => {
+      const seq = ++fetchSeqRef.current;
+      if (options?.manual || !liveData) {
+        setIsLoading(true);
+      }
+      setErrorText(null);
+
+      try {
+        const resp = await fetchLiveMatchFromClient(defaultRegion);
+        if (seq !== fetchSeqRef.current) return;
+        setLiveData(resp);
+        setIsLoading(false);
+
+        if ((resp.status === "IN_GAME" || resp.status === "PREGAME") && resp.players.length > 0) {
+          const effectiveRegion = normalizeRegion(resp.detectedRegion, defaultRegion);
+
+          // Only fetch players we haven't already resolved (unless manual refresh was clicked)
+          const toFetch = options?.manual
+            ? resp.players
+            : resp.players.filter((p) => ranksRef.current[p.puuid.toLowerCase()] === undefined);
+
+          if (toFetch.length === 0) {
+            setIsRanksLoading(false);
+            return;
+          }
+
+          setIsRanksLoading(true);
+          const batchSize = 3;
+          for (let i = 0; i < toFetch.length; i += batchSize) {
+            if (seq !== fetchSeqRef.current) return;
+            const slice = toFetch.slice(i, i + batchSize);
+            const results = await Promise.all(
+              slice.map(async (p) => {
+                const info = await fetchPlayerRankByPuuid(p.puuid, effectiveRegion, apiKey);
+                return [p.puuid.toLowerCase(), info ?? undefined] as const;
+              }),
+            );
+            if (seq !== fetchSeqRef.current) return;
+            setRanksByPuuid((prev) => {
+              const next = { ...prev };
+              for (const [k, v] of results) {
+                if (v) next[k] = v;
+              }
+              return next;
+            });
+          }
+          if (seq === fetchSeqRef.current) {
+            setIsRanksLoading(false);
+          }
+        } else {
+          setIsRanksLoading(false);
+        }
+      } catch (err) {
+        if (seq !== fetchSeqRef.current) return;
+        setErrorText(err instanceof Error ? err.message : String(err));
+        setIsLoading(false);
+      }
+    },
+    [apiKey, defaultRegion, liveData],
+  );
+
+  // Initial load once on mount
+  const didInitRef = useRef(false);
   useEffect(() => {
-    void loadLiveMatch();
+    if (!didInitRef.current) {
+      didInitRef.current = true;
+      void loadLiveMatch();
+    }
   }, [loadLiveMatch]);
 
+  // Silent background auto-refresh when on the realtime tab & LiveMatchView is visible
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || !isActiveTab || selectedTabId !== "live") return;
     const timer = window.setInterval(() => {
       void loadLiveMatch();
     }, 15_000);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, loadLiveMatch]);
+  }, [autoRefresh, isActiveTab, selectedTabId, loadLiveMatch]);
 
-  const status = liveData?.status ?? "NOT_RUNNING";
+  // Save / Update Current Match as a Persistent Sub-Tab
+  const handleSaveCurrentMatchTab = () => {
+    if (!liveData || (liveData.status !== "IN_GAME" && liveData.status !== "PREGAME")) return;
+    const region = normalizeRegion(liveData.detectedRegion, defaultRegion);
+    const mAsset = liveData.mapUrl ? resolveMapAsset(assets, null, liveData.mapUrl) : undefined;
+    const mName = mAsset?.displayName || liveData.mapUrl?.split("/").pop() || "マッチ";
+    const now = Date.now();
+    const d = new Date(now);
+    const timeStr = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(
+      2,
+      "0",
+    )}`;
+    const label = `${mName} (${timeStr})`;
+
+    setSavedTabs((prev) => {
+      const existingIdx = liveData.matchId
+        ? prev.findIndex((t) => t.matchId === liveData.matchId)
+        : -1;
+
+      let next: SavedLiveMatchTab[];
+      let focusId: string;
+      if (existingIdx >= 0) {
+        focusId = prev[existingIdx].id;
+        next = [...prev];
+        next[existingIdx] = {
+          ...prev[existingIdx],
+          label,
+          savedAt: now,
+          region,
+          liveData,
+          ranksByPuuid: { ...prev[existingIdx].ranksByPuuid, ...ranksByPuuid },
+        };
+      } else {
+        focusId = `saved-${liveData.matchId || now}`;
+        const newTab: SavedLiveMatchTab = {
+          id: focusId,
+          matchId: liveData.matchId,
+          label,
+          savedAt: now,
+          region,
+          liveData,
+          ranksByPuuid: { ...ranksByPuuid },
+        };
+        next = [newTab, ...prev].slice(0, MAX_SAVED_TABS);
+      }
+
+      saveTabsToStorage(next);
+      setSelectedTabId(focusId);
+      return next;
+    });
+
+    setJustSavedToast(true);
+    window.setTimeout(() => setJustSavedToast(false), 2200);
+  };
+
+  const handleRemoveSavedTab = (tabId: string) => {
+    setSavedTabs((prev) => {
+      const next = prev.filter((t) => t.id !== tabId);
+      saveTabsToStorage(next);
+      return next;
+    });
+    if (selectedTabId === tabId) {
+      setSelectedTabId("live");
+    }
+  };
+
+  const activeSavedTab =
+    selectedTabId === "live"
+      ? null
+      : (savedTabs.find((t) => t.id === selectedTabId) ?? null);
+
+  const viewData = activeSavedTab ? activeSavedTab.liveData : liveData;
+  const viewRanks = activeSavedTab ? activeSavedTab.ranksByPuuid : ranksByPuuid;
+  const status = viewData?.status ?? "NOT_RUNNING";
   const isActiveMatch = status === "IN_GAME" || status === "PREGAME";
-  const effectiveRegion = normalizeRegion(liveData?.detectedRegion, defaultRegion);
-  const mapAsset = liveData?.mapUrl ? resolveMapAsset(assets, null, liveData.mapUrl) : undefined;
-  const mapLabel = mapAsset?.displayName || liveData?.mapUrl?.split("/").pop() || "マップ未確定";
-  const modeLabel = formatLiveModeLabel(liveData?.modeId, liveData?.queueId);
+  const effectiveRegion = activeSavedTab
+    ? activeSavedTab.region
+    : normalizeRegion(viewData?.detectedRegion, defaultRegion);
 
-  const allies = (liveData?.players ?? []).filter((p) => p.isAlly);
-  const enemies = (liveData?.players ?? []).filter((p) => !p.isAlly);
+  const mapAsset = viewData?.mapUrl ? resolveMapAsset(assets, null, viewData.mapUrl) : undefined;
+  const mapLabel = mapAsset?.displayName || viewData?.mapUrl?.split("/").pop() || "マップ未確定";
+  const modeLabel = formatLiveModeLabel(viewData?.modeId, viewData?.queueId);
+
+  const allies = (viewData?.players ?? []).filter((p) => p.isAlly);
+  const enemies = (viewData?.players ?? []).filter((p) => !p.isAlly);
+
+  const canSaveLiveNow =
+    selectedTabId === "live" &&
+    Boolean(liveData && (liveData.status === "IN_GAME" || liveData.status === "PREGAME"));
+
+  const isCurrentMatchAlreadySaved = Boolean(
+    liveData?.matchId && savedTabs.some((t) => t.matchId === liveData.matchId),
+  );
 
   return (
     <div className="max-w-5xl mx-auto py-8 px-6 space-y-6 vt-animate-in">
+      {/* Persistent Sub-Tab Bar: Realtime + Saved Match Tabs */}
+      <div className="flex items-center justify-between gap-3 vt-hairline-b pb-3 overflow-x-auto">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <button
+            type="button"
+            onClick={() => setSelectedTabId("live")}
+            className={`h-8 px-3 rounded-[9px] text-xs flex items-center gap-2 shrink-0 transition-colors cursor-pointer border ${
+              selectedTabId === "live"
+                ? "bg-[#ededed] text-[#0a0a0a] border-[#ededed] font-medium"
+                : "bg-[#0d0d0d] text-[#8f8f8f] border-[rgba(255,255,255,0.09)] hover:text-[#ededed]"
+            }`}
+          >
+            <Radio className="w-3.5 h-3.5" />
+            <span>リアルタイム</span>
+          </button>
+
+          {savedTabs.map((tab) => {
+            const active = selectedTabId === tab.id;
+            return (
+              <div
+                key={tab.id}
+                className={`h-8 pl-3 pr-1.5 rounded-[9px] text-xs flex items-center gap-1.5 shrink-0 transition-colors border ${
+                  active
+                    ? "bg-white/[0.11] text-[#ededed] border-white/25 font-medium"
+                    : "bg-[#0d0d0d] text-[#8f8f8f] border-[rgba(255,255,255,0.09)] hover:text-[#ededed]"
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setSelectedTabId(tab.id)}
+                  className="flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Bookmark className="w-3 h-3 text-[#8f8f8f]" />
+                  <span>{tab.label}</span>
+                </button>
+                <button
+                  type="button"
+                  title="保存タブを閉じる"
+                  onClick={() => handleRemoveSavedTab(tab.id)}
+                  className="p-1 rounded hover:bg-white/[0.12] text-[#5c5c5c] hover:text-[#ededed] cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {canSaveLiveNow && (
+          <button
+            type="button"
+            onClick={handleSaveCurrentMatchTab}
+            className="h-8 px-3 rounded-[9px] bg-[#141414] hover:bg-[#1e1e1e] text-[#ededed] text-xs vt-hairline flex items-center gap-1.5 shrink-0 transition-colors cursor-pointer"
+          >
+            {justSavedToast ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-[var(--semantic-win)]" />
+                <span>タブ保存しました</span>
+              </>
+            ) : (
+              <>
+                <Bookmark className="w-3.5 h-3.5" />
+                <span>
+                  {isCurrentMatchAlreadySaved ? "保存タブを更新" : "この試合をタブ保存"}
+                </span>
+              </>
+            )}
+          </button>
+        )}
+      </div>
+
       {/* Top Control Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-2.5 flex-wrap">
             <h1 className="text-xl font-semibold tracking-tight text-[#ededed]">
-              ライブマッチ（試合中情報）
+              {activeSavedTab ? `保存済みマッチ: ${activeSavedTab.label}` : "ライブマッチ（試合中情報）"}
             </h1>
-            <span
-              className={`inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full border ${
-                status === "IN_GAME"
-                  ? "text-[var(--semantic-win)] border-[var(--semantic-win-border)] bg-[var(--semantic-win-bg)]"
+
+            {activeSavedTab ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full border border-white/20 bg-white/[0.06] text-[#ededed] font-num">
+                <Clock className="w-3 h-3 text-[#8f8f8f]" />
+                {formatSavedTime(activeSavedTab.savedAt)} 保存
+              </span>
+            ) : (
+              <span
+                className={`inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full border ${
+                  status === "IN_GAME"
+                    ? "text-[var(--semantic-win)] border-[var(--semantic-win-border)] bg-[var(--semantic-win-bg)]"
+                    : status === "PREGAME"
+                      ? "text-[#ededed] border-white/25 bg-white/[0.07]"
+                      : "text-[#8f8f8f] border-[rgba(255,255,255,0.09)]"
+                }`}
+              >
+                <Radio className="w-3 h-3" />
+                {status === "IN_GAME"
+                  ? "試合進行中"
                   : status === "PREGAME"
-                    ? "text-[#ededed] border-white/25 bg-white/[0.07]"
-                    : "text-[#8f8f8f] border-[rgba(255,255,255,0.09)]"
-              }`}
-            >
-              <Radio className="w-3 h-3" />
-              {status === "IN_GAME"
-                ? "試合進行中"
-                : status === "PREGAME"
-                  ? "エージェント選択中"
-                  : status === "IN_MENU"
-                    ? "ロビー待機中"
-                    : "未接続"}
-            </span>
+                    ? "エージェント選択中"
+                    : status === "IN_MENU"
+                      ? "ロビー待機中"
+                      : "未接続"}
+              </span>
+            )}
           </div>
           <p className="text-xs text-[#8f8f8f] mt-1">
-            起動中の VALORANT クライアントから現在のマッチ参加者とランク情報を自動検出します。
+            {activeSavedTab
+              ? "保存した試合スナップショットを表示しています。別のタブへ移動しても状態はそのまま保持されます。"
+              : "起動中の VALORANT クライアントから現在のマッチ参加者とランク・K/D を自動検出します（タブ切替時も取得済みデータを保持）。"}
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 self-start sm:self-center">
-          <button
-            type="button"
-            onClick={() => setAutoRefresh((v) => !v)}
-            className={`h-9 px-3.5 text-xs rounded-[12px] border transition-colors duration-150 cursor-pointer ${
-              autoRefresh
-                ? "bg-white/[0.07] border-white/25 text-[#ededed]"
-                : "bg-[#0a0a0a] border-[rgba(255,255,255,0.09)] text-[#8f8f8f] hover:text-[#ededed]"
-            }`}
-          >
-            自動更新 (15秒): {autoRefresh ? "ON" : "OFF"}
-          </button>
+        {!activeSavedTab && (
+          <div className="flex items-center gap-2.5 self-start sm:self-center">
+            <button
+              type="button"
+              onClick={() => setAutoRefresh((v) => !v)}
+              className={`h-9 px-3.5 text-xs rounded-[12px] border transition-colors duration-150 cursor-pointer ${
+                autoRefresh
+                  ? "bg-white/[0.07] border-white/25 text-[#ededed]"
+                  : "bg-[#0a0a0a] border-[rgba(255,255,255,0.09)] text-[#8f8f8f] hover:text-[#ededed]"
+              }`}
+            >
+              自動更新 (15秒): {autoRefresh ? "ON" : "OFF"}
+            </button>
 
-          <button
-            type="button"
-            onClick={() => void loadLiveMatch()}
-            disabled={isLoading}
-            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium rounded-[12px] bg-[#ededed] text-black hover:bg-white transition-colors duration-150 disabled:opacity-50 cursor-pointer"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
-            <span>再取得</span>
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => void loadLiveMatch({ manual: true })}
+              disabled={isLoading}
+              className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium rounded-[12px] bg-[#ededed] text-black hover:bg-white transition-colors duration-150 disabled:opacity-50 cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
+              <span>再取得</span>
+            </button>
+          </div>
+        )}
       </div>
 
-      {errorText && (
+      {errorText && !activeSavedTab && (
         <div className="vt-panel p-5 flex items-center gap-3 text-xs text-[var(--semantic-loss)]">
           <ShieldAlert className="w-4 h-4 shrink-0" />
           <span>{errorText}</span>
@@ -430,9 +753,14 @@ export function LiveMatchView({
             {status === "IN_MENU" ? "マッチ待機中" : "VALORANT が起動していません"}
           </div>
           <p className="text-xs text-[#8f8f8f] max-w-md mx-auto leading-relaxed">
-            {liveData?.message ||
-              "VALORANT を起動してマッチ（エージェント選択または試合中）に入ると、自動的に全プレイヤーのランク・勝率が表示されます。"}
+            {viewData?.message ||
+              "VALORANT を起動してマッチ（エージェント選択または試合中）に入ると、自動的に全プレイヤーのランク・K/D・勝率が表示されます。"}
           </p>
+          {savedTabs.length > 0 && (
+            <p className="text-[11px] text-[#5c5c5c] pt-1">
+              上部の保存済みタブから過去の試合ロビーをいつでも確認できます。
+            </p>
+          )}
         </div>
       ) : (
         <div className="space-y-6">
@@ -459,10 +787,10 @@ export function LiveMatchView({
                 </div>
 
                 <div className="flex items-center gap-3 text-xs text-[#8f8f8f] mt-1.5">
-                  {liveData?.serverPod && (
+                  {viewData?.serverPod && (
                     <span className="inline-flex items-center gap-1 font-num">
                       <Server className="w-3.5 h-3.5 text-[#5c5c5c]" />
-                      {liveData.serverPod}
+                      {viewData.serverPod}
                     </span>
                   )}
                   <span className="font-num uppercase text-[#5c5c5c]">
@@ -479,22 +807,22 @@ export function LiveMatchView({
               title="味方チーム"
               isAllyTable={true}
               players={allies}
-              ranksByPuuid={ranksByPuuid}
-              isRanksLoading={isRanksLoading}
+              ranksByPuuid={viewRanks}
+              isRanksLoading={!activeSavedTab && isRanksLoading}
               isPregame={status === "PREGAME"}
               assets={assets}
               onSelectPlayer={(n, t) => onSelectPlayer(n, t, effectiveRegion)}
             />
           )}
 
-          {/* Enemy Team (shown in IN_GAME; in PREGAME Riot only exposes AllyTeam) */}
+          {/* Enemy Team */}
           {enemies.length > 0 && (
             <LiveTeamTable
               title="相手チーム"
               isAllyTable={false}
               players={enemies}
-              ranksByPuuid={ranksByPuuid}
-              isRanksLoading={isRanksLoading}
+              ranksByPuuid={viewRanks}
+              isRanksLoading={!activeSavedTab && isRanksLoading}
               isPregame={status === "PREGAME"}
               assets={assets}
               onSelectPlayer={(n, t) => onSelectPlayer(n, t, effectiveRegion)}

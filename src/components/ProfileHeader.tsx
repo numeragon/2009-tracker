@@ -1,12 +1,14 @@
 import { Pin, RefreshCw } from "lucide-react";
 import type { PlayerProfileBundle } from "../types/valorant";
 
-export type ProfileTab = "overview" | "matches";
+export type ProfileTab = "overview" | "matches" | "agents" | "maps";
 
 interface ProfileHeaderProps {
   profile: PlayerProfileBundle;
   activeTab: ProfileTab;
   onChangeTab: (tab: ProfileTab) => void;
+  agentCount: number;
+  mapCount: number;
   isFavorite: boolean;
   onToggleFavorite: () => void;
   onRefresh: () => void;
@@ -17,6 +19,8 @@ export function ProfileHeader({
   profile,
   activeTab,
   onChangeTab,
+  agentCount,
+  mapCount,
   isFavorite,
   onToggleFavorite,
   onRefresh,
@@ -99,33 +103,33 @@ export function ProfileHeader({
       </div>
 
       {/* Tabs */}
-      <div className="px-6 flex items-center gap-6 vt-hairline-t bg-black/40">
-        <button
-          type="button"
-          onClick={() => onChangeTab("overview")}
-          className={`relative py-3 text-xs font-medium transition-colors duration-150 cursor-pointer ${
-            activeTab === "overview" ? "text-[#ededed]" : "text-[#8f8f8f] hover:text-[#ededed]"
-          }`}
-        >
-          概要
-          {activeTab === "overview" && (
-            <span className="absolute left-0 right-0 bottom-0 h-[1.5px] bg-[#ededed]" />
-          )}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => onChangeTab("matches")}
-          className={`relative py-3 text-xs font-medium transition-colors duration-150 cursor-pointer flex items-center gap-1.5 ${
-            activeTab === "matches" ? "text-[#ededed]" : "text-[#8f8f8f] hover:text-[#ededed]"
-          }`}
-        >
-          <span>試合履歴</span>
-          <span className="font-num text-[11px] text-[#5c5c5c]">{profile.matches.length}</span>
-          {activeTab === "matches" && (
-            <span className="absolute left-0 right-0 bottom-0 h-[1.5px] bg-[#ededed]" />
-          )}
-        </button>
+      <div className="px-6 flex items-center gap-6 vt-hairline-t bg-black/40 overflow-x-auto">
+        {[
+          { id: "overview" as const, label: "概要", count: null },
+          { id: "matches" as const, label: "試合履歴", count: profile.matches.length },
+          { id: "agents" as const, label: "エージェント", count: agentCount },
+          { id: "maps" as const, label: "マップ", count: mapCount },
+        ].map((tab) => {
+          const active = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => onChangeTab(tab.id)}
+              className={`relative py-3 text-xs font-medium transition-colors duration-150 cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                active ? "text-[#ededed]" : "text-[#8f8f8f] hover:text-[#ededed]"
+              }`}
+            >
+              <span>{tab.label}</span>
+              {tab.count !== null && (
+                <span className="font-num text-[11px] text-[#5c5c5c]">{tab.count}</span>
+              )}
+              {active && (
+                <span className="absolute left-0 right-0 bottom-0 h-[1.5px] bg-[#ededed]" />
+              )}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

@@ -24,6 +24,7 @@ import {
   updateStoredPlayerMeta,
 } from "./lib/storage";
 import { loadValorantAssets } from "./lib/valorantAssets";
+import { aggregateProfileStats } from "./lib/aggregateStats";
 import {
   fetchFilteredMatches,
   fetchMatchDetail,
@@ -37,6 +38,8 @@ import { SettingsView } from "./components/SettingsView";
 import { LeaderboardView } from "./components/LeaderboardView";
 import { ProfileHeader, type ProfileTab } from "./components/ProfileHeader";
 import { ProfileOverviewTab } from "./components/ProfileOverviewTab";
+import { AgentStatsTab } from "./components/AgentStatsTab";
+import { MapStatsTab } from "./components/MapStatsTab";
 import { RrHistoryChart } from "./components/RrHistoryChart";
 import { MatchHistoryTab } from "./components/MatchHistoryTab";
 import { MatchDetailView } from "./components/MatchDetailView";
@@ -330,8 +333,14 @@ export default function App() {
     route === "profile"
       ? profileTab === "matches"
         ? "matches"
-        : "overview"
+        : profileTab === "agents"
+          ? "agents"
+          : profileTab === "maps"
+            ? "maps"
+            : "overview"
       : route;
+
+  const aggregatedStats = profile ? aggregateProfileStats(profile) : null;
 
   return (
     <div className="relative h-screen w-screen overflow-hidden bg-[#000000] text-[#ededed] flex ring-1 ring-inset ring-white/[0.08]">
@@ -501,6 +510,8 @@ export default function App() {
                         profile={profile}
                         activeTab={profileTab}
                         onChangeTab={(tab) => setProfileTab(tab)}
+                        agentCount={aggregatedStats?.agents.length ?? 0}
+                        mapCount={aggregatedStats?.maps.length ?? 0}
                         isFavorite={isCurrentFavorite}
                         onToggleFavorite={handleToggleFavorite}
                         onRefresh={() =>
@@ -512,7 +523,7 @@ export default function App() {
                         isRefreshing={isProfileLoading}
                       />
 
-                      {profileTab === "overview" ? (
+                      {profileTab === "overview" && (
                         <ProfileOverviewTab
                           profile={profile}
                           assets={assets}
@@ -521,7 +532,9 @@ export default function App() {
                             <RrHistoryChart points={profile.rrHistory} assets={assets} />
                           }
                         />
-                      ) : (
+                      )}
+
+                      {profileTab === "matches" && (
                         <MatchHistoryTab
                           matches={filteredMatches}
                           modeFilter={modeFilter}
@@ -532,6 +545,24 @@ export default function App() {
                           onOpenSettings={() => setRoute("settings")}
                           onSelectMatch={handleSelectMatch}
                           assets={assets}
+                        />
+                      )}
+
+                      {profileTab === "agents" && aggregatedStats && (
+                        <AgentStatsTab
+                          stats={aggregatedStats.agents}
+                          sampleSize={aggregatedStats.sampleSize}
+                          assets={assets}
+                          onOpenMatches={() => setProfileTab("matches")}
+                        />
+                      )}
+
+                      {profileTab === "maps" && aggregatedStats && (
+                        <MapStatsTab
+                          stats={aggregatedStats.maps}
+                          sampleSize={aggregatedStats.sampleSize}
+                          assets={assets}
+                          onOpenMatches={() => setProfileTab("matches")}
                         />
                       )}
                     </>
