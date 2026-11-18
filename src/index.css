@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Geist Sans", "Geist", "Inter", "Segoe UI", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  --bg-base: #000000;
+  --bg-panel: #0a0a0a;
+  --bg-hover: rgba(255, 255, 255, 0.035);
+  --bg-active: rgba(255, 255, 255, 0.065);
+  --border-hairline: rgba(255, 255, 255, 0.09);
+  --border-hover: rgba(255, 255, 255, 0.18);
+  --text-primary: #ededed;
+  --text-secondary: #8f8f8f;
+  --text-muted: #5c5c5c;
+
+  /* 控えめで彩度を落としたセマンティックカラー（勝利・敗北・RR増減のみ） */
+  --semantic-win: #72c494;
+  --semantic-win-bg: rgba(114, 196, 148, 0.08);
+  --semantic-win-border: rgba(114, 196, 148, 0.22);
+
+  --semantic-loss: #d47878;
+  --semantic-loss-bg: rgba(212, 120, 120, 0.08);
+  --semantic-loss-border: rgba(212, 120, 120, 0.22);
+
+  --radius-base: 12px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.vt-panel {
+  background-color: rgba(10, 10, 10, 0.76);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-base);
+}
+
+.vt-hairline-b {
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.vt-hairline-t {
+  border-top: 1px solid var(--border-hairline);
+}
+
+.vt-hairline-r {
+  border-right: 1px solid var(--border-hairline);
+}
+
+@keyframes vtFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.vt-animate-in {
+  animation: vtFadeIn 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes vtPulse {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.85;
+  }
+}
+
+.vt-skeleton {
+  background-color: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  animation: vtPulse 1.6s ease-in-out infinite;
+}
+
+/* Scrollbar styling - monochrome minimal */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+}

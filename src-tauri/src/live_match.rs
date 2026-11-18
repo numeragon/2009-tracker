@@ -1,0 +1,744 @@
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Read};
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::fs::OpenOptionsExt;
+
+const CLIENT_PLATFORM_B64: &str = "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9";
+
+static CACHED_CLIENT_VERSION: OnceLock<tokio::sync::Mutex<Option<String>>> = OnceLock::new();
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveMatchPlayerRaw {
+    pub puuid: String,
+    pub game_name: String,
+    pub tag_line: String,
+    pub team_id: String,
+    pub is_ally: bool,
+    pub is_self: bool,
+    pub agent_id: String,
+    pub selection_state: String,
+    pub account_level: i64,
+    pub hide_account_level: bool,
+    pub is_incognito: bool,
+    pub card_id: String,
+    pub pregame_tier: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveMatchResponse {
+    /// "NOT_RUNNING" | "IN_MENU" | "PREGAME" | "IN_GAME" | "ERROR"
+    pub status: String,
+    pub message: Option<String>,
+    pub match_id: Option<String>,
+    pub map_url: Option<String>,
+    pub mode_id: Option<String>,
+    pub queue_id: Option<String>,
+    pub server_pod: Option<String>,
+    pub detected_region: Option<String>,
+    pub detected_shard: Option<String>,
+    pub self_puuid: Option<String>,
+    pub players: Vec<LiveMatchPlayerRaw>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EntitlementsTokenResp {
+    access_token: String,
+    subject: String,
+    token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PlayerMatchResp {
+    #[serde(rename = "MatchID")]
+    match_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NameServiceEntry {
+    #[serde(rename = "Subject")]
+    subject: String,
+    #[serde(rename = "GameName")]
+    game_name: String,
+    #[serde(rename = "TagLine")]
+    tag_line: String,
+}
+
+fn open_shared_file(path: &PathBuf) -> std::io::Result<std::fs::File> {
+    let mut opts = OpenOptions::new();
+    opts.read(true);
+    #[cfg(target_os = "windows")]
+    {
+        // FILE_SHARE_READ (1) | FILE_SHARE_WRITE (2) | FILE_SHARE_DELETE (4)
+        opts.share_mode(1 | 2 | 4);
+    }
+    opts.open(path)
+}
+
+fn get_local_app_data() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+}
+
+struct LockfileInfo {
+    port: String,
+    password: String,
+}
+
+fn read_lockfile() -> Option<LockfileInfo> {
+    let base = get_local_app_data()?;
+    let path = base
+        .join("Riot Games")
+        .join("Riot Client")
+        .join("Config")
+        .join("lockfile");
+    let mut file = open_shared_file(&path).ok()?;
+    let mut content = String::new();
+    file.read_to_string(&mut content).ok()?;
+    let parts: Vec<&str> = content.trim().split(':').collect();
+    if parts.len() < 5 {
+        return None;
+    }
+    Some(LockfileInfo {
+        port: parts[2].to_string(),
+        password: parts[3].to_string(),
+    })
+}
+
+struct LogDiscovery {
+    glz_region: Option<String>,
+    shard: Option<String>,
+    client_version: Option<String>,
+}
+
+fn scan_shooter_game_log() -> LogDiscovery {
+    let mut out = LogDiscovery {
+        glz_region: None,
+        shard: None,
+        client_version: None,
+    };
+
+    let Some(base) = get_local_app_data() else {
+        return out;
+    };
+    let log_path = base
+        .join("VALORANT")
+        .join("Saved")
+        .join("Logs")
+        .join("ShooterGame.log");
+
+    let Ok(file) = open_shared_file(&log_path) else {
+        return out;
+    };
+
+    let reader = BufReader::new(file);
+    for line_res in reader.lines().take(50_000) {
+        let Ok(line) = line_res else { continue };
+
+        if out.glz_region.is_none() {
+            if let Some(start_idx) = line.find("https://glz-") {
+                let rest = &line[start_idx + "https://glz-".len()..];
+                if let Some(end_idx) = rest.find(".a.pvp.net") {
+                    let middle = &rest[..end_idx]; // e.g. "ap-1.ap" or "latam-1.na"
+                    if let Some((reg, sh)) = middle.split_once("-1.") {
+                        if !reg.is_empty() && !sh.is_empty() {
+                            out.glz_region = Some(reg.to_lowercase());
+                            out.shard = Some(sh.to_lowercase());
+                        }
+                    }
+                }
+            }
+        }
+
+        if out.client_version.is_none() {
+            if let Some(idx) = line.find("CI server version: ") {
+                let raw_ver = line[idx + "CI server version: ".len()..].trim();
+                if !raw_ver.is_empty() {
+                    // Convert e.g. "release-09.10-29-2985574" -> "release-09.10-shipping-29-2985574" if needed
+                    let normalized = if raw_ver.contains("-shipping-") {
+                        raw_ver.to_string()
+                    } else {
+                        let segs: Vec<&str> = raw_ver.split('-').collect();
+                        if segs.len() == 4 && segs[0] == "release" {
+                            format!("{}-{}-shipping-{}-{}", segs[0], segs[1], segs[2], segs[3])
+                        } else {
+                            raw_ver.to_string()
+                        }
+                    };
+                    out.client_version = Some(normalized);
+                }
+            }
+        }
+
+        if out.glz_region.is_some() && out.client_version.is_some() {
+            break;
+        }
+    }
+
+    out
+}
+
+async fn resolve_client_version(remote_client: &reqwest::Client, log_ver: Option<String>) -> String {
+    let lock = CACHED_CLIENT_VERSION.get_or_init(|| tokio::sync::Mutex::new(None));
+    {
+        let guard = lock.lock().await;
+        if let Some(v) = guard.as_ref() {
+            return v.clone();
+        }
+    }
+
+    if let Ok(resp) = remote_client
+        .get("https://valorant-api.com/v1/version")
+        .send()
+        .await
+    {
+        if let Ok(json) = resp.json::<Value>().await {
+            if let Some(v) = json
+                .get("data")
+                .and_then(|d| d.get("riotClientVersion"))
+                .and_then(|v| v.as_str())
+            {
+                let ver = v.to_string();
+                let mut guard = lock.lock().await;
+                *guard = Some(ver.clone());
+                return ver;
+            }
+        }
+    }
+
+    log_ver.unwrap_or_else(|| "release-10.00-shipping-10-3000000".to_string())
+}
+
+fn fallback_glz_and_shard(region: &str) -> (String, String) {
+    match region.trim().to_lowercase().as_str() {
+        "eu" => ("eu".to_string(), "eu".to_string()),
+        "na" => ("na".to_string(), "na".to_string()),
+        "kr" => ("kr".to_string(), "kr".to_string()),
+        "latam" => ("latam".to_string(), "na".to_string()),
+        "br" => ("br".to_string(), "na".to_string()),
+        _ => ("ap".to_string(), "ap".to_string()),
+    }
+}
+
+fn format_pod_name(pod_id: &str) -> String {
+    let lower = pod_id.to_lowercase();
+    if lower.contains("tokyo") {
+        return "Tokyo".to_string();
+    }
+    if lower.contains("singapore") {
+        return "Singapore".to_string();
+    }
+    if lower.contains("hongkong") || lower.contains("hong-kong") {
+        return "Hong Kong".to_string();
+    }
+    if lower.contains("sydney") {
+        return "Sydney".to_string();
+    }
+    if lower.contains("mumbai") {
+        return "Mumbai".to_string();
+    }
+    if lower.contains("seoul") {
+        return "Seoul".to_string();
+    }
+    pod_id
+        .rsplit('.')
+        .next()
+        .unwrap_or(pod_id)
+        .to_string()
+}
+
+async fn resolve_names(
+    remote_client: &reqwest::Client,
+    shard: &str,
+    headers: &HeaderMap,
+    puuids: &[String],
+) -> HashMap<String, (String, String)> {
+    let mut map = HashMap::new();
+    if puuids.is_empty() {
+        return map;
+    }
+
+    let url = format!("https://pd.{shard}.a.pvp.net/name-service/v2/players");
+    if let Ok(resp) = remote_client
+        .put(&url)
+        .headers(headers.clone())
+        .json(puuids)
+        .send()
+        .await
+    {
+        if resp.status().is_success() {
+            if let Ok(entries) = resp.json::<Vec<NameServiceEntry>>().await {
+                for entry in entries {
+                    map.insert(entry.subject.to_lowercase(), (entry.game_name, entry.tag_line));
+                }
+            }
+        }
+    }
+    map
+}
+
+#[tauri::command]
+pub async fn fetch_live_match(region_fallback: String) -> Result<LiveMatchResponse, String> {
+    let Some(lock) = read_lockfile() else {
+        return Ok(LiveMatchResponse {
+            status: "NOT_RUNNING".to_string(),
+            message: Some("VALORANT（Riot Client）が起動していません。ゲームを起動してから再取得してください。".to_string()),
+            match_id: None,
+            map_url: None,
+            mode_id: None,
+            queue_id: None,
+            server_pod: None,
+            detected_region: None,
+            detected_shard: None,
+            self_puuid: None,
+            players: Vec::new(),
+        });
+    };
+
+    let local_client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("ローカルHTTPクライアント初期化エラー: {e}"))?;
+
+    let remote_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("HTTPクライアント初期化エラー: {e}"))?;
+
+    let basic_auth = BASE64.encode(format!("riot:{}", lock.password));
+    let token_url = format!("https://127.0.0.1:{}/entitlements/v1/token", lock.port);
+
+    let token_resp = match local_client
+        .get(&token_url)
+        .header(AUTHORIZATION, format!("Basic {basic_auth}"))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<EntitlementsTokenResp>().await {
+            Ok(data) => data,
+            Err(_) => {
+                return Ok(LiveMatchResponse {
+                    status: "NOT_RUNNING".to_string(),
+                    message: Some("Riot Client にログインしていません。VALORANT を起動してください。".to_string()),
+                    match_id: None,
+                    map_url: None,
+                    mode_id: None,
+                    queue_id: None,
+                    server_pod: None,
+                    detected_region: None,
+                    detected_shard: None,
+                    self_puuid: None,
+                    players: Vec::new(),
+                });
+            }
+        },
+        _ => {
+            return Ok(LiveMatchResponse {
+                status: "NOT_RUNNING".to_string(),
+                message: Some("VALORANT クライアントとの接続に失敗しました。ゲームが起動中か確認してください。".to_string()),
+                match_id: None,
+                map_url: None,
+                mode_id: None,
+                queue_id: None,
+                server_pod: None,
+                detected_region: None,
+                detected_shard: None,
+                self_puuid: None,
+                players: Vec::new(),
+            });
+        }
+    };
+
+    let self_puuid = token_resp.subject.clone();
+    let log_info = scan_shooter_game_log();
+    let (fb_glz, fb_shard) = fallback_glz_and_shard(&region_fallback);
+    let glz_region = log_info.glz_region.unwrap_or(fb_glz);
+    let shard = log_info.shard.unwrap_or(fb_shard);
+    let client_version = resolve_client_version(&remote_client, log_info.client_version).await;
+
+    let mut riot_headers = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", token_resp.access_token)) {
+        riot_headers.insert(AUTHORIZATION, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&token_resp.token) {
+        riot_headers.insert("X-Riot-Entitlements-JWT", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&client_version) {
+        riot_headers.insert("X-Riot-ClientVersion", v);
+    }
+    riot_headers.insert(
+        "X-Riot-ClientPlatform",
+        HeaderValue::from_static(CLIENT_PLATFORM_B64),
+    );
+
+    let glz_base = format!("https://glz-{glz_region}-1.{shard}.a.pvp.net");
+
+    // 1. Check Core-Game (Active Match)
+    let core_player_url = format!("{glz_base}/core-game/v1/players/{self_puuid}");
+    if let Ok(r) = remote_client
+        .get(&core_player_url)
+        .headers(riot_headers.clone())
+        .send()
+        .await
+    {
+        if r.status().is_success() {
+            if let Ok(pm) = r.json::<PlayerMatchResp>().await {
+                if let Some(match_id) = pm.match_id.filter(|id| !id.is_empty()) {
+                    let match_url = format!("{glz_base}/core-game/v1/matches/{match_id}");
+                    if let Ok(mr) = remote_client
+                        .get(&match_url)
+                        .headers(riot_headers.clone())
+                        .send()
+                        .await
+                    {
+                        if mr.status().is_success() {
+                            if let Ok(mjson) = mr.json::<Value>().await {
+                                return Ok(build_core_game_response(
+                                    &remote_client,
+                                    &shard,
+                                    &glz_region,
+                                    &riot_headers,
+                                    &self_puuid,
+                                    &match_id,
+                                    &mjson,
+                                )
+                                .await);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Check Pre-Game (Agent Select)
+    let pre_player_url = format!("{glz_base}/pregame/v1/players/{self_puuid}");
+    if let Ok(r) = remote_client
+        .get(&pre_player_url)
+        .headers(riot_headers.clone())
+        .send()
+        .await
+    {
+        if r.status().is_success() {
+            if let Ok(pm) = r.json::<PlayerMatchResp>().await {
+                if let Some(match_id) = pm.match_id.filter(|id| !id.is_empty()) {
+                    let match_url = format!("{glz_base}/pregame/v1/matches/{match_id}");
+                    if let Ok(mr) = remote_client
+                        .get(&match_url)
+                        .headers(riot_headers.clone())
+                        .send()
+                        .await
+                    {
+                        if mr.status().is_success() {
+                            if let Ok(mjson) = mr.json::<Value>().await {
+                                return Ok(build_pregame_response(
+                                    &remote_client,
+                                    &shard,
+                                    &glz_region,
+                                    &riot_headers,
+                                    &self_puuid,
+                                    &match_id,
+                                    &mjson,
+                                )
+                                .await);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(LiveMatchResponse {
+        status: "IN_MENU".to_string(),
+        message: Some("VALORANT 起動中（現在マッチには入っていません）。エージェント選択または試合が始まると表示されます。".to_string()),
+        match_id: None,
+        map_url: None,
+        mode_id: None,
+        queue_id: None,
+        server_pod: None,
+        detected_region: Some(glz_region),
+        detected_shard: Some(shard),
+        self_puuid: Some(self_puuid),
+        players: Vec::new(),
+    })
+}
+
+async fn build_core_game_response(
+    remote_client: &reqwest::Client,
+    shard: &str,
+    glz_region: &str,
+    headers: &HeaderMap,
+    self_puuid: &str,
+    match_id: &str,
+    mjson: &Value,
+) -> LiveMatchResponse {
+    let map_url = mjson.get("MapID").and_then(|v| v.as_str()).map(String::from);
+    let mode_id = mjson.get("ModeID").and_then(|v| v.as_str()).map(String::from);
+    let pod_raw = mjson.get("GamePodID").and_then(|v| v.as_str()).unwrap_or("");
+    let server_pod = if pod_raw.is_empty() {
+        None
+    } else {
+        Some(format_pod_name(pod_raw))
+    };
+
+    let raw_players = mjson
+        .get("Players")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let self_lower = self_puuid.to_lowercase();
+    let mut self_team = String::new();
+    for p in &raw_players {
+        let sub = p.get("Subject").and_then(|v| v.as_str()).unwrap_or("");
+        if sub.eq_ignore_ascii_case(&self_lower) {
+            self_team = p.get("TeamID").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            break;
+        }
+    }
+
+    let puuids: Vec<String> = raw_players
+        .iter()
+        .filter(|p| !p.get("IsCoach").and_then(|v| v.as_bool()).unwrap_or(false))
+        .filter_map(|p| p.get("Subject").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+
+    let name_map = resolve_names(remote_client, shard, headers, &puuids).await;
+
+    let mut players = Vec::new();
+    for p in &raw_players {
+        if p.get("IsCoach").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        let puuid = p.get("Subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if puuid.is_empty() {
+            continue;
+        }
+        let team_id = p.get("TeamID").and_then(|v| v.as_str()).unwrap_or("Neutral").to_string();
+        let is_self = puuid.eq_ignore_ascii_case(&self_lower);
+        let is_ally = if self_team.is_empty() {
+            is_self
+        } else {
+            team_id.eq_ignore_ascii_case(&self_team)
+        };
+
+        let identity = p.get("PlayerIdentity");
+        let account_level = identity
+            .and_then(|id| id.get("AccountLevel"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let hide_account_level = identity
+            .and_then(|id| id.get("HideAccountLevel"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let is_incognito = identity
+            .and_then(|id| id.get("Incognito"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let card_id = identity
+            .and_then(|id| id.get("PlayerCardID"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let (game_name, tag_line) = name_map
+            .get(&puuid.to_lowercase())
+            .cloned()
+            .unwrap_or_else(|| ("Player".to_string(), "".to_string()));
+
+        players.push(LiveMatchPlayerRaw {
+            puuid,
+            game_name,
+            tag_line,
+            team_id,
+            is_ally,
+            is_self,
+            agent_id: p
+                .get("CharacterID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            selection_state: "locked".to_string(),
+            account_level,
+            hide_account_level,
+            is_incognito,
+            card_id,
+            pregame_tier: 0,
+        });
+    }
+
+    LiveMatchResponse {
+        status: "IN_GAME".to_string(),
+        message: None,
+        match_id: Some(match_id.to_string()),
+        map_url,
+        mode_id,
+        queue_id: None,
+        server_pod,
+        detected_region: Some(glz_region.to_string()),
+        detected_shard: Some(shard.to_string()),
+        self_puuid: Some(self_puuid.to_string()),
+        players,
+    }
+}
+
+async fn build_pregame_response(
+    remote_client: &reqwest::Client,
+    shard: &str,
+    glz_region: &str,
+    headers: &HeaderMap,
+    self_puuid: &str,
+    match_id: &str,
+    mjson: &Value,
+) -> LiveMatchResponse {
+    let map_url = mjson.get("MapID").and_then(|v| v.as_str()).map(String::from);
+    let mode_id = mjson.get("Mode").and_then(|v| v.as_str()).map(String::from);
+    let queue_id = mjson.get("QueueID").and_then(|v| v.as_str()).map(String::from);
+    let pod_raw = mjson.get("GamePodID").and_then(|v| v.as_str()).unwrap_or("");
+    let server_pod = if pod_raw.is_empty() {
+        None
+    } else {
+        Some(format_pod_name(pod_raw))
+    };
+
+    let self_lower = self_puuid.to_lowercase();
+
+    // Collect teams from Teams array or AllyTeam fallback
+    let mut team_entries: Vec<(String, Value)> = Vec::new();
+    if let Some(teams) = mjson.get("Teams").and_then(|v| v.as_array()) {
+        for t in teams {
+            let tid = t.get("TeamID").and_then(|v| v.as_str()).unwrap_or("Blue").to_string();
+            if let Some(plist) = t.get("Players").and_then(|v| v.as_array()) {
+                for p in plist {
+                    team_entries.push((tid.clone(), p.clone()));
+                }
+            }
+        }
+    }
+    if team_entries.is_empty() {
+        if let Some(ally) = mjson.get("AllyTeam") {
+            let tid = ally.get("TeamID").and_then(|v| v.as_str()).unwrap_or("Blue").to_string();
+            if let Some(plist) = ally.get("Players").and_then(|v| v.as_array()) {
+                for p in plist {
+                    team_entries.push((tid.clone(), p.clone()));
+                }
+            }
+        }
+    }
+
+    let mut self_team = mjson
+        .get("AllyTeam")
+        .and_then(|a| a.get("TeamID"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    if self_team.is_empty() {
+        for (tid, p) in &team_entries {
+            let sub = p.get("Subject").and_then(|v| v.as_str()).unwrap_or("");
+            if sub.eq_ignore_ascii_case(&self_lower) {
+                self_team = tid.clone();
+                break;
+            }
+        }
+    }
+
+    let puuids: Vec<String> = team_entries
+        .iter()
+        .filter_map(|(_, p)| p.get("Subject").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+
+    let name_map = resolve_names(remote_client, shard, headers, &puuids).await;
+
+    let mut players = Vec::new();
+    for (team_id, p) in team_entries {
+        let puuid = p.get("Subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if puuid.is_empty() {
+            continue;
+        }
+        let is_self = puuid.eq_ignore_ascii_case(&self_lower);
+        let is_ally = if self_team.is_empty() {
+            true
+        } else {
+            team_id.eq_ignore_ascii_case(&self_team)
+        };
+
+        let identity = p.get("PlayerIdentity");
+        let account_level = identity
+            .and_then(|id| id.get("AccountLevel"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let hide_account_level = identity
+            .and_then(|id| id.get("HideAccountLevel"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let is_incognito = identity
+            .and_then(|id| id.get("Incognito"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let card_id = identity
+            .and_then(|id| id.get("PlayerCardID"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let (game_name, tag_line) = name_map
+            .get(&puuid.to_lowercase())
+            .cloned()
+            .unwrap_or_else(|| ("Player".to_string(), "".to_string()));
+
+        players.push(LiveMatchPlayerRaw {
+            puuid,
+            game_name,
+            tag_line,
+            team_id,
+            is_ally,
+            is_self,
+            agent_id: p
+                .get("CharacterID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            selection_state: p
+                .get("CharacterSelectionState")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            account_level,
+            hide_account_level,
+            is_incognito,
+            card_id,
+            pregame_tier: p
+                .get("CompetitiveTier")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+        });
+    }
+
+    LiveMatchResponse {
+        status: "PREGAME".to_string(),
+        message: None,
+        match_id: Some(match_id.to_string()),
+        map_url,
+        mode_id,
+        queue_id,
+        server_pod,
+        detected_region: Some(glz_region.to_string()),
+        detected_shard: Some(shard.to_string()),
+        self_puuid: Some(self_puuid.to_string()),
+        players,
+    }
+}

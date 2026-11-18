@@ -1,0 +1,490 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+  AppSettings,
+  MatchDetailBundle,
+  MatchModeFilter,
+  MatchSummaryItem,
+  PlayerProfileBundle,
+  Region,
+  SavedPlayerEntry,
+  ValorantAssetsCatalog,
+} from "./types/valorant";
+import { ApiClientError, normalizeError } from "./lib/errors";
+import {
+  clearSearchHistory,
+  hydrateFromTauriStore,
+  loadFavoritesSync,
+  loadSearchHistorySync,
+  loadSettingsSync,
+  playerKey,
+  pushSearchHistory,
+  removeSearchHistoryItem,
+  saveSettings,
+  toggleFavoritePlayer,
+  updateStoredPlayerMeta,
+} from "./lib/storage";
+import { loadValorantAssets } from "./lib/valorantAssets";
+import {
+  fetchFilteredMatches,
+  fetchMatchDetail,
+  fetchPlayerProfile,
+  parseRiotId,
+} from "./lib/henrikApi";
+import { Sidebar, type AppRoute } from "./components/Sidebar";
+import { SearchBar } from "./components/SearchBar";
+import { HomeView } from "./components/HomeView";
+import { SettingsView } from "./components/SettingsView";
+import { LeaderboardPlaceholder } from "./components/LeaderboardPlaceholder";
+import { ProfileHeader, type ProfileTab } from "./components/ProfileHeader";
+import { ProfileOverviewTab } from "./components/ProfileOverviewTab";
+import { RrHistoryChart } from "./components/RrHistoryChart";
+import { MatchHistoryTab } from "./components/MatchHistoryTab";
+import { MatchDetailView } from "./components/MatchDetailView";
+import { LiveMatchView } from "./components/LiveMatchView";
+import { WaveDotBackground, type WavePreset } from "./components/WaveDotBackground";
+import { AutoUpdateBanner } from "./components/AutoUpdateBanner";
+import { ErrorBanner } from "./components/ErrorBanner";
+import { MatchDetailSkeleton, ProfileSkeleton } from "./components/Skeletons";
+
+const EMPTY_ASSETS: ValorantAssetsCatalog = {
+  agentsById: {},
+  agentsByKey: {},
+  mapsById: {},
+  mapsByKey: {},
+  tiersById: {},
+  weaponsById: {},
+};
+
+export default function App() {
+  const [settings, setSettings] = useState<AppSettings>(() => loadSettingsSync());
+  const [searchRegion, setSearchRegion] = useState<Region>(() => loadSettingsSync().defaultRegion);
+  const [history, setHistory] = useState<SavedPlayerEntry[]>(() => loadSearchHistorySync());
+  const [favorites, setFavorites] = useState<SavedPlayerEntry[]>(() => loadFavoritesSync());
+  const [assets, setAssets] = useState<ValorantAssetsCatalog>(EMPTY_ASSETS);
+
+  const [route, setRoute] = useState<AppRoute>("home");
+  const [profileTab, setProfileTab] = useState<ProfileTab>("overview");
+  const [headerQuery, setHeaderQuery] = useState("");
+
+  // Profile & Match list state
+  const [profile, setProfile] = useState<PlayerProfileBundle | null>(null);
+  const [isProfileLoading, setIsProfileLoading] = useState(false);
+  const [profileError, setProfileError] = useState<ApiClientError | null>(null);
+  const [lastSearchTarget, setLastSearchTarget] = useState<{
+    name: string;
+    tag: string;
+    region: Region;
+  } | null>(null);
+
+  // Match mode filtering state
+  const [modeFilter, setModeFilter] = useState<MatchModeFilter>("all");
+  const [filteredMatches, setFilteredMatches] = useState<MatchSummaryItem[]>([]);
+  const [isMatchesLoading, setIsMatchesLoading] = useState(false);
+  const [matchesError, setMatchesError] = useState<ApiClientError | null>(null);
+
+  // Match detail state
+  const [selectedMatchSummary, setSelectedMatchSummary] = useState<MatchSummaryItem | null>(null);
+  const [matchDetail, setMatchDetail] = useState<MatchDetailBundle | null>(null);
+  const [isDetailLoading, setIsDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<ApiClientError | null>(null);
+
+  const searchReqIdRef = useRef(0);
+
+  // Hydrate persistent Tauri store + valorant-api.com static assets on startup
+  useEffect(() => {
+    hydrateFromTauriStore().then(({ settings: s, history: h, favorites: f }) => {
+      setSettings(s);
+      setSearchRegion(s.defaultRegion);
+      setHistory(h);
+      setFavorites(f);
+    });
+
+    loadValorantAssets().then((catalog) => {
+      setAssets(catalog);
+    });
+  }, []);
+
+  const executePlayerSearch = useCallback(
+    async (
+      name: string,
+      tag: string,
+      region: Region,
+      options?: { forceRefresh?: boolean; keepTab?: boolean },
+    ) => {
+      const reqId = ++searchReqIdRef.current;
+      setHeaderQuery(`${name}#${tag}`);
+      setSearchRegion(region);
+      setLastSearchTarget({ name, tag, region });
+      setProfileError(null);
+      setMatchesError(null);
+
+      if (!options?.keepTab) {
+        setProfileTab("overview");
+      }
+      setModeFilter("all");
+      setRoute("profile");
+      setIsProfileLoading(true);
+
+      try {
+        const currentKey = settings.apiKey || loadSettingsSync().apiKey;
+        const bundle = await fetchPlayerProfile(name, tag, region, currentKey, {
+          forceRefresh: options?.forceRefresh,
+        });
+
+        if (reqId !== searchReqIdRef.current) return;
+
+        setProfile(bundle);
+        setFilteredMatches(bundle.matches);
+        setHeaderQuery(`${bundle.name}#${bundle.tag}`);
+
+        const entry: SavedPlayerEntry = {
+          name: bundle.name,
+          tag: bundle.tag,
+          region: bundle.region,
+          cardId: bundle.cardId,
+          accountLevel: bundle.accountLevel,
+          tierId: bundle.currentRank.tierId,
+          tierName: bundle.currentRank.tierName,
+          updatedAt: Date.now(),
+        };
+        const nextHistory = await pushSearchHistory(entry);
+        const updated = await updateStoredPlayerMeta(entry);
+        setHistory(updated.history.length > 0 ? updated.history : nextHistory);
+        setFavorites(updated.favorites);
+      } catch (err) {
+        if (reqId !== searchReqIdRef.current) return;
+        const normalized = normalizeError(err);
+        setProfileError(normalized);
+        if (!options?.forceRefresh) {
+          setProfile(null);
+        }
+      } finally {
+        if (reqId === searchReqIdRef.current) {
+          setIsProfileLoading(false);
+        }
+      }
+    },
+    [settings.apiKey],
+  );
+
+  const handleSearchInput = useCallback(
+    (riotIdInput: string, region: Region) => {
+      try {
+        const { name, tag } = parseRiotId(riotIdInput);
+        void executePlayerSearch(name, tag, region);
+      } catch (err) {
+        const normalized = normalizeError(err);
+        setProfileError(normalized);
+        if (route !== "home") {
+          setRoute("profile");
+          setProfile(null);
+        }
+      }
+    },
+    [executePlayerSearch, route],
+  );
+
+  const handleChangeModeFilter = useCallback(
+    async (nextMode: MatchModeFilter) => {
+      setModeFilter(nextMode);
+      setMatchesError(null);
+      if (!profile) return;
+
+      if (nextMode === "all") {
+        setFilteredMatches(profile.matches);
+        return;
+      }
+
+      setIsMatchesLoading(true);
+      try {
+        const currentKey = settings.apiKey || loadSettingsSync().apiKey;
+        const list = await fetchFilteredMatches(profile, nextMode, currentKey);
+        setFilteredMatches(list);
+      } catch (err) {
+        setMatchesError(normalizeError(err));
+      } finally {
+        setIsMatchesLoading(false);
+      }
+    },
+    [profile, settings.apiKey],
+  );
+
+  const handleSelectMatch = useCallback(
+    async (match: MatchSummaryItem) => {
+      setSelectedMatchSummary(match);
+      setMatchDetail(null);
+      setDetailError(null);
+      setRoute("match-detail");
+      setIsDetailLoading(true);
+
+      try {
+        const currentKey = settings.apiKey || loadSettingsSync().apiKey;
+        const detail = await fetchMatchDetail(match.matchId, currentKey, match.rawV4);
+        setMatchDetail(detail);
+      } catch (err) {
+        setDetailError(normalizeError(err));
+      } finally {
+        setIsDetailLoading(false);
+      }
+    },
+    [settings.apiKey],
+  );
+
+  const handleSaveSettings = async (next: AppSettings) => {
+    const saved = await saveSettings(next);
+    setSettings(saved);
+    setSearchRegion(saved.defaultRegion);
+  };
+
+  const handleToggleFavorite = async () => {
+    if (!profile) return;
+    const entry: SavedPlayerEntry = {
+      name: profile.name,
+      tag: profile.tag,
+      region: profile.region,
+      cardId: profile.cardId,
+      accountLevel: profile.accountLevel,
+      tierId: profile.currentRank.tierId,
+      tierName: profile.currentRank.tierName,
+      updatedAt: Date.now(),
+    };
+    const nextFavs = await toggleFavoritePlayer(entry);
+    setFavorites(nextFavs);
+  };
+
+  const isCurrentFavorite = profile
+    ? favorites.some((f) => playerKey(f.name, f.tag) === playerKey(profile.name, profile.tag))
+    : false;
+
+  const activePlayerKey = profile
+    ? playerKey(profile.name, profile.tag, profile.region)
+    : lastSearchTarget
+      ? playerKey(lastSearchTarget.name, lastSearchTarget.tag, lastSearchTarget.region)
+      : null;
+
+  const activeWavePreset: WavePreset =
+    route === "profile"
+      ? profileTab === "matches"
+        ? "matches"
+        : "overview"
+      : route;
+
+  return (
+    <div className="relative h-screen w-screen overflow-hidden bg-[#000000] text-[#ededed] flex">
+      {/* Interactive 3D Wave Dot Background across all tabs */}
+      <WaveDotBackground preset={activeWavePreset} />
+
+      {/* Left Sidebar */}
+      <Sidebar
+        currentRoute={route}
+        activePlayerKey={activePlayerKey}
+        hasApiKey={Boolean(settings.apiKey)}
+        favorites={favorites}
+        history={history}
+        assets={assets}
+        onNavigate={(nextRoute) => {
+          setProfileError(null);
+          setRoute(nextRoute);
+        }}
+        onSelectSavedPlayer={(name, tag, region) => {
+          void executePlayerSearch(name, tag, region);
+        }}
+        onRemoveFavorite={async (entry) => {
+          const next = await toggleFavoritePlayer(entry);
+          setFavorites(next);
+        }}
+        onRemoveHistory={async (name, tag) => {
+          const next = await removeSearchHistoryItem(name, tag);
+          setHistory(next);
+        }}
+        onClearHistory={async () => {
+          const next = await clearSearchHistory();
+          setHistory(next);
+        }}
+      />
+
+      {/* Right Column: Persistent Top Search Header + Scrollable Main Content */}
+      <div className="relative z-10 flex-1 flex flex-col min-w-0 h-full">
+        <AutoUpdateBanner />
+        {/* Persistent Top Search Bar (§5) */}
+        <header className="h-14 px-6 flex items-center justify-between gap-4 vt-hairline-b bg-black/65 backdrop-blur-md shrink-0">
+          <SearchBar
+            variant="header"
+            initialQuery={headerQuery}
+            region={searchRegion}
+            onRegionChange={setSearchRegion}
+            onSearch={handleSearchInput}
+            isLoading={isProfileLoading}
+          />
+
+          <div className="hidden md:flex items-center gap-2 text-[11px] text-[#5c5c5c] font-num shrink-0">
+            <span>REGION: {searchRegion.toUpperCase()}</span>
+          </div>
+        </header>
+
+        {/* Main Content */}
+        <main className="flex-1 overflow-y-auto bg-transparent">
+          {route === "home" && (
+            <HomeView
+              region={searchRegion}
+              onRegionChange={setSearchRegion}
+              onSearch={handleSearchInput}
+              isLoading={isProfileLoading}
+              hasApiKey={Boolean(settings.apiKey)}
+              onOpenSettings={() => setRoute("settings")}
+              onOpenLiveMatch={() => setRoute("live")}
+              favorites={favorites}
+              history={history}
+              onSelectSavedPlayer={(name, tag, region) => {
+                void executePlayerSearch(name, tag, region);
+              }}
+              error={profileError}
+              onRetry={
+                lastSearchTarget
+                  ? () =>
+                      void executePlayerSearch(
+                        lastSearchTarget.name,
+                        lastSearchTarget.tag,
+                        lastSearchTarget.region,
+                      )
+                  : undefined
+              }
+            />
+          )}
+
+          {route === "live" && (
+            <LiveMatchView
+              defaultRegion={searchRegion}
+              apiKey={settings.apiKey || loadSettingsSync().apiKey}
+              assets={assets}
+              onSelectPlayer={(name, tag, region) => {
+                void executePlayerSearch(name, tag, region);
+              }}
+            />
+          )}
+
+          {route === "settings" && (
+            <SettingsView settings={settings} onSaveSettings={handleSaveSettings} />
+          )}
+
+          {route === "leaderboard" && <LeaderboardPlaceholder />}
+
+          {route === "profile" && (
+            <>
+              {isProfileLoading ? (
+                <ProfileSkeleton />
+              ) : (
+                <div className="max-w-5xl mx-auto py-8 px-6 space-y-6">
+                  {profileError && (
+                    <ErrorBanner
+                      error={profileError}
+                      onOpenSettings={() => setRoute("settings")}
+                      onRetry={
+                        lastSearchTarget
+                          ? () =>
+                              void executePlayerSearch(
+                                lastSearchTarget.name,
+                                lastSearchTarget.tag,
+                                lastSearchTarget.region,
+                                { forceRefresh: true },
+                              )
+                          : undefined
+                      }
+                    />
+                  )}
+
+                  {profile && (
+                    <>
+                      <ProfileHeader
+                        profile={profile}
+                        activeTab={profileTab}
+                        onChangeTab={(tab) => setProfileTab(tab)}
+                        isFavorite={isCurrentFavorite}
+                        onToggleFavorite={handleToggleFavorite}
+                        onRefresh={() =>
+                          void executePlayerSearch(profile.name, profile.tag, profile.region, {
+                            forceRefresh: true,
+                            keepTab: true,
+                          })
+                        }
+                        isRefreshing={isProfileLoading}
+                      />
+
+                      {profileTab === "overview" ? (
+                        <ProfileOverviewTab
+                          profile={profile}
+                          assets={assets}
+                          onSwitchToMatches={() => setProfileTab("matches")}
+                          rrChartNode={
+                            <RrHistoryChart points={profile.rrHistory} assets={assets} />
+                          }
+                        />
+                      ) : (
+                        <MatchHistoryTab
+                          matches={filteredMatches}
+                          modeFilter={modeFilter}
+                          onChangeModeFilter={handleChangeModeFilter}
+                          isLoading={isMatchesLoading}
+                          error={matchesError}
+                          onRetry={() => void handleChangeModeFilter(modeFilter)}
+                          onOpenSettings={() => setRoute("settings")}
+                          onSelectMatch={handleSelectMatch}
+                          assets={assets}
+                        />
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+
+          {route === "match-detail" && (
+            <>
+              {isDetailLoading ? (
+                <MatchDetailSkeleton />
+              ) : detailError ? (
+                <div className="max-w-5xl mx-auto py-8 px-6 space-y-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRoute("profile");
+                      setProfileTab("matches");
+                    }}
+                    className="text-xs text-[#8f8f8f] hover:text-[#ededed] transition-colors cursor-pointer"
+                  >
+                    ← 試合履歴に戻る
+                  </button>
+                  <ErrorBanner
+                    error={detailError}
+                    onOpenSettings={() => setRoute("settings")}
+                    onRetry={
+                      selectedMatchSummary
+                        ? () => void handleSelectMatch(selectedMatchSummary)
+                        : undefined
+                    }
+                  />
+                </div>
+              ) : matchDetail ? (
+                <MatchDetailView
+                  detail={matchDetail}
+                  targetPuuid={profile?.puuid ?? ""}
+                  targetName={profile?.name ?? lastSearchTarget?.name ?? ""}
+                  targetTag={profile?.tag ?? lastSearchTarget?.tag ?? ""}
+                  assets={assets}
+                  onBack={() => {
+                    setRoute("profile");
+                    setProfileTab("matches");
+                  }}
+                  onSelectPlayer={(pName, pTag) => {
+                    void executePlayerSearch(pName, pTag, searchRegion);
+                  }}
+                />
+              ) : null}
+            </>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+}
