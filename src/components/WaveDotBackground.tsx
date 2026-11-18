@@ -3,6 +3,8 @@ import { useEffect, useRef } from "react";
 export type WavePreset =
   | "home"
   | "live"
+  | "recorder"
+  | "clips"
   | "overview"
   | "matches"
   | "match-detail"
@@ -43,6 +45,28 @@ const PRESETS: Record<WavePreset, PresetConfig> = {
     speed: 1.35,
     radialPulse: 14.0,
     tint: [210, 240, 222],
+  },
+  recorder: {
+    pitch: 0.59,
+    yaw: -0.21,
+    amp1: 22,
+    amp2: 16,
+    freqX: 0.105,
+    freqZ: 0.105,
+    speed: 1.15,
+    radialPulse: 11.0,
+    tint: [238, 238, 238],
+  },
+  clips: {
+    pitch: 0.66,
+    yaw: 0.08,
+    amp1: 14,
+    amp2: 10,
+    freqX: 0.09,
+    freqZ: 0.09,
+    speed: 0.55,
+    radialPulse: 0.0,
+    tint: [220, 220, 224],
   },
   overview: {
     pitch: 0.52,

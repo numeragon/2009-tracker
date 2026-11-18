@@ -34,17 +34,25 @@ import { Sidebar, type AppRoute } from "./components/Sidebar";
 import { SearchBar } from "./components/SearchBar";
 import { HomeView } from "./components/HomeView";
 import { SettingsView } from "./components/SettingsView";
-import { LeaderboardPlaceholder } from "./components/LeaderboardPlaceholder";
+import { LeaderboardView } from "./components/LeaderboardView";
 import { ProfileHeader, type ProfileTab } from "./components/ProfileHeader";
 import { ProfileOverviewTab } from "./components/ProfileOverviewTab";
 import { RrHistoryChart } from "./components/RrHistoryChart";
 import { MatchHistoryTab } from "./components/MatchHistoryTab";
 import { MatchDetailView } from "./components/MatchDetailView";
 import { LiveMatchView } from "./components/LiveMatchView";
+import { RecorderView } from "./components/RecorderView";
+import { ClipStudioView } from "./components/ClipStudioView";
 import { WaveDotBackground, type WavePreset } from "./components/WaveDotBackground";
 import { AutoUpdateBanner } from "./components/AutoUpdateBanner";
 import { ErrorBanner } from "./components/ErrorBanner";
 import { MatchDetailSkeleton, ProfileSkeleton } from "./components/Skeletons";
+import {
+  onReplayClipSaved,
+  onReplayNavigate,
+  onReplayStateChanged,
+  replayGetState,
+} from "./lib/replayApi";
 
 const EMPTY_ASSETS: ValorantAssetsCatalog = {
   agentsById: {},
@@ -88,9 +96,17 @@ export default function App() {
   const [isDetailLoading, setIsDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<ApiClientError | null>(null);
 
+  // Instant Replay sidebar status & global clip toast
+  const [isRecordingActive, setIsRecordingActive] = useState(false);
+  const [saveHotkeyLabel, setSaveHotkeyLabel] = useState<string | undefined>(undefined);
+  const [savedClipNotice, setSavedClipNotice] = useState<{
+    title: string;
+    path: string;
+  } | null>(null);
+
   const searchReqIdRef = useRef(0);
 
-  // Hydrate persistent Tauri store + valorant-api.com static assets on startup
+  // Hydrate persistent Tauri store + valorant-api.com static assets + Replay status on startup
   useEffect(() => {
     hydrateFromTauriStore().then(({ settings: s, history: h, favorites: f }) => {
       setSettings(s);
@@ -102,6 +118,42 @@ export default function App() {
     loadValorantAssets().then((catalog) => {
       setAssets(catalog);
     });
+
+    const syncReplayBadge = () => {
+      replayGetState()
+        .then((st) => {
+          setIsRecordingActive(st.config.enabled && !st.error);
+          setSaveHotkeyLabel(st.hotkeyLabels.saveClip);
+        })
+        .catch(() => {});
+    };
+    syncReplayBadge();
+
+    let active = true;
+    const unsubs: Array<() => void> = [];
+    void Promise.all([
+      onReplayStateChanged(() => {
+        if (active) syncReplayBadge();
+      }),
+      onReplayNavigate((nextRoute) => {
+        if (active) setRoute(nextRoute);
+      }),
+      onReplayClipSaved((ev) => {
+        if (!active) return;
+        setSavedClipNotice({ title: ev.title, path: ev.path });
+        window.setTimeout(() => {
+          setSavedClipNotice((cur) => (cur?.path === ev.path ? null : cur));
+        }, 4500);
+      }),
+    ]).then((fns) => {
+      if (!active) fns.forEach((f) => f());
+      else unsubs.push(...fns);
+    });
+
+    return () => {
+      active = false;
+      unsubs.forEach((f) => f());
+    };
   }, []);
 
   const executePlayerSearch = useCallback(
@@ -279,6 +331,8 @@ export default function App() {
         currentRoute={route}
         activePlayerKey={activePlayerKey}
         hasApiKey={Boolean(settings.apiKey)}
+        isRecordingActive={isRecordingActive}
+        saveHotkeyLabel={saveHotkeyLabel}
         favorites={favorites}
         history={history}
         assets={assets}
@@ -333,6 +387,7 @@ export default function App() {
               hasApiKey={Boolean(settings.apiKey)}
               onOpenSettings={() => setRoute("settings")}
               onOpenLiveMatch={() => setRoute("live")}
+              onOpenRecorder={() => setRoute("recorder")}
               favorites={favorites}
               history={history}
               onSelectSavedPlayer={(name, tag, region) => {
@@ -363,11 +418,29 @@ export default function App() {
             />
           )}
 
+          {route === "recorder" && (
+            <RecorderView onOpenClipStudio={() => setRoute("clips")} />
+          )}
+
+          {route === "clips" && <ClipStudioView />}
+
           {route === "settings" && (
             <SettingsView settings={settings} onSaveSettings={handleSaveSettings} />
           )}
 
-          {route === "leaderboard" && <LeaderboardPlaceholder />}
+          {route === "leaderboard" && (
+            <LeaderboardView
+              defaultRegion={searchRegion}
+              apiKey={settings.apiKey || loadSettingsSync().apiKey}
+              assets={assets}
+              favorites={favorites}
+              history={history}
+              onSelectPlayer={(name, tag, region) => {
+                void executePlayerSearch(name, tag, region);
+              }}
+              onOpenSettings={() => setRoute("settings")}
+            />
+          )}
 
           {route === "profile" && (
             <>
@@ -484,6 +557,24 @@ export default function App() {
             </>
           )}
         </main>
+
+        {/* Global Floating Clip-Saved Toast (shown outside Recorder tab) */}
+        {savedClipNotice && route !== "recorder" && (
+          <div className="fixed bottom-5 right-5 z-40 rounded-[12px] bg-[#111111]/95 backdrop-blur-md vt-hairline px-4 py-3 flex items-center gap-3 text-xs text-[#ededed]">
+            <span className="w-2 h-2 rounded-full bg-[#ededed]" />
+            <span>クリップ保存完了: {savedClipNotice.title}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setSavedClipNotice(null);
+                setRoute("clips");
+              }}
+              className="px-2.5 py-1 rounded-[7px] bg-[#ededed] text-[#0a0a0a] text-[11px] font-medium hover:bg-white cursor-pointer"
+            >
+              編集を開く
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

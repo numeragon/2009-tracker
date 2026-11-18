@@ -42,8 +42,20 @@ body,
   background-color: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--font-sans);
+  user-select: none;
+  -webkit-user-select: none;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+input,
+textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+img {
+  -webkit-user-drag: none;
 }
 
 .font-num {

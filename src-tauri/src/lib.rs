@@ -1,13 +1,65 @@
 mod live_match;
+mod replay;
+
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let start_in_background = std::env::args().any(|a| a == "--background");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![live_match::fetch_live_match])
+        .setup(move |app| {
+            let host = replay::host::init(app.handle().clone());
+            app.manage(host);
+            if start_in_background {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if window.label() == "main" {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    let app = window.app_handle();
+                    if replay::host::should_minimize_to_tray(app) {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else {
+                        replay::host::shutdown_tray(app);
+                    }
+                }
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            live_match::fetch_live_match,
+            replay::host::replay_get_state,
+            replay::host::replay_update_config,
+            replay::host::replay_toggle_recording,
+            replay::host::replay_save_now,
+            replay::host::replay_set_autostart,
+            replay::host::replay_suspend_hotkeys,
+            replay::host::replay_poll_pressed_key,
+            replay::host::replay_pick_folder,
+            replay::host::replay_open_folder,
+            replay::host::replay_reveal_file,
+            replay::host::clips_scan,
+            replay::host::clips_inspect,
+            replay::host::clips_import_dialog,
+            replay::host::clips_create_folder,
+            replay::host::clips_rename_folder,
+            replay::host::clips_move_clips,
+            replay::host::clips_delete_items,
+            replay::host::clips_delete_folder,
+            replay::host::clips_preview_export_plan,
+            replay::host::clips_start_export,
+            replay::host::clips_get_export_status,
+            replay::host::clips_cancel_export,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

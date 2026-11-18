@@ -62,6 +62,7 @@ let setupAssetFileName = `2009-tracker_${version}_x64-setup.exe`;
 
 if (fs.existsSync(nsisDir)) {
   for (const f of fs.readdirSync(nsisDir)) {
+    if (!f.includes(`_${version}_`)) continue;
     const full = path.join(nsisDir, f);
     if (f.endsWith("-setup.exe")) {
       const dst = path.join(COMPLETED_DIR, f);
@@ -80,6 +81,7 @@ if (fs.existsSync(nsisDir)) {
 // 3. MSI Installer
 if (fs.existsSync(msiDir)) {
   for (const f of fs.readdirSync(msiDir)) {
+    if (!f.includes(`_${version}_`)) continue;
     if (f.endsWith(".msi")) {
       const dst = path.join(COMPLETED_DIR, f);
       fs.copyFileSync(path.join(msiDir, f), dst);

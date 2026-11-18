@@ -1,11 +1,16 @@
 import type {
   CompetitiveSummaryStats,
   HenrikAccountV2Data,
+  HenrikLeaderboardV3Player,
+  HenrikLeaderboardV3Threshold,
   HenrikMatchV2Data,
   HenrikMatchesV4Match,
   HenrikMatchesV4Player,
   HenrikMmrHistoryV1Item,
   HenrikMmrV3Data,
+  LeaderboardLookupResult,
+  LeaderboardPlayerItem,
+  LeaderboardSliceBundle,
   MatchDetailBundle,
   MatchDetailPlayer,
   MatchModeFilter,
@@ -830,5 +835,271 @@ export async function fetchMatchDetail(
       return fallbackDetail;
     }
     throw err;
+  }
+}
+
+interface HenrikLeaderboardV3RawEnvelope {
+  status: number;
+  results?: {
+    total?: number;
+    returned?: number;
+    before?: number;
+    after?: number;
+  };
+  data?: {
+    updated_at?: string;
+    thresholds?: HenrikLeaderboardV3Threshold[];
+    players?: HenrikLeaderboardV3Player[];
+  };
+  errors?: Array<{ message?: string }>;
+}
+
+function normalizeLeaderboardPlayerV3(p: HenrikLeaderboardV3Player): LeaderboardPlayerItem {
+  const rawName = (p.name ?? "").trim();
+  const rawTag = (p.tag ?? "").trim();
+  const isAnon = Boolean(p.is_anonymized) || (!rawName && !rawTag);
+  const cardId =
+    p.card && p.card !== "00000000-0000-0000-0000-000000000000" ? p.card : null;
+  const cardUrls = cardId ? buildPlayerCardUrls(cardId) : null;
+
+  return {
+    rank: p.leaderboard_rank ?? 0,
+    puuid: p.puuid ?? null,
+    name: isAnon ? "シークレットエージェント" : rawName || "Unknown",
+    tag: isAnon ? "" : rawTag,
+    isAnonymized: isAnon,
+    isBanned: Boolean(p.is_banned),
+    tierId: p.tier ?? 27,
+    rr: p.rr ?? 0,
+    wins: p.wins ?? 0,
+    cardId,
+    cardSmallUrl: cardUrls?.small ?? null,
+    cardWideUrl: cardUrls?.wide ?? null,
+  };
+}
+
+export async function fetchLeaderboardSlice(
+  region: Region,
+  apiKey: string,
+  options?: {
+    startIndex?: number;
+    size?: number;
+    forceRefresh?: boolean;
+  },
+): Promise<LeaderboardSliceBundle> {
+  const startIndex = Math.max(0, Math.floor(options?.startIndex ?? 0));
+  const size = Math.max(1, Math.min(1000, Math.floor(options?.size ?? 1000)));
+  const cacheKey = `leaderboard_v3:${region}:${startIndex}:${size}`;
+
+  if (!options?.forceRefresh) {
+    const cached = getCachedData<LeaderboardSliceBundle>(cacheKey);
+    if (cached) return cached;
+  }
+
+  const cleanKey = sanitizeApiKey(apiKey);
+  if (!cleanKey) {
+    throw new ApiClientError(
+      "MISSING_API_KEY",
+      "HenrikDev APIキーが設定されていません。設定画面からAPIキーを登録してください。",
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `${BASE_URL}/valorant/v3/leaderboard/${encodeURIComponent(region)}/pc?start_index=${startIndex}&size=${size}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: cleanKey,
+          Accept: "application/json",
+        },
+      },
+    );
+  } catch (err) {
+    throw normalizeError(err);
+  }
+
+  let body: HenrikLeaderboardV3RawEnvelope | null = null;
+  try {
+    body = (await response.json()) as HenrikLeaderboardV3RawEnvelope;
+  } catch {
+    body = null;
+  }
+
+  if (!response.ok) {
+    const st = response.status;
+    if (st === 401 || st === 403) {
+      throw new ApiClientError(
+        "UNAUTHORIZED",
+        "APIキーが無効か、アクセス権限がありません。設定画面でキーを確認してください。",
+        st,
+      );
+    }
+    if (st === 429) {
+      throw new ApiClientError(
+        "RATE_LIMIT",
+        "APIのレートリミットに達しました。少し待ってから再試行してください。",
+        st,
+      );
+    }
+    throw new ApiClientError(
+      "UNKNOWN",
+      body?.errors?.[0]?.message || `リーダーボードの取得に失敗しました（HTTP ${st}）。`,
+      st,
+    );
+  }
+
+  if (!body?.data) {
+    throw new ApiClientError("UNKNOWN", "リーダーボードデータの解析に失敗しました。");
+  }
+
+  const players = (body.data.players ?? []).map(normalizeLeaderboardPlayerV3);
+  const thresholds = (body.data.thresholds ?? [])
+    .map((t) => ({
+      tierId: t.tier?.id ?? 0,
+      tierName: t.tier?.name ?? "",
+      startIndex: t.start_index ?? 1,
+      rrThreshold: t.threshold ?? 0,
+    }))
+    .sort((a, b) => b.tierId - a.tierId);
+
+  const bundle: LeaderboardSliceBundle = {
+    region,
+    totalPlayers: body.results?.total ?? players.length,
+    startIndex,
+    updatedAtIso: body.data.updated_at ?? null,
+    thresholds,
+    players,
+  };
+
+  setCachedData(cacheKey, bundle);
+  return bundle;
+}
+
+export async function lookupLeaderboardPlayer(
+  region: Region,
+  riotIdInput: string,
+  apiKey: string,
+): Promise<LeaderboardLookupResult> {
+  const { name, tag } = parseRiotId(riotIdInput);
+  const cacheKey = `leaderboard_lookup:${region}:${name.toLowerCase()}#${tag.toLowerCase()}`;
+  const cached = getCachedData<LeaderboardLookupResult>(cacheKey);
+  if (cached) return cached;
+
+  const cleanKey = sanitizeApiKey(apiKey);
+  if (!cleanKey) {
+    throw new ApiClientError(
+      "MISSING_API_KEY",
+      "HenrikDev APIキーが設定されていません。設定画面からAPIキーを登録してください。",
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `${BASE_URL}/valorant/v3/leaderboard/${encodeURIComponent(region)}/pc?name=${encodeURIComponent(name)}&tag=${encodeURIComponent(tag)}`,
+      {
+        method: "GET",
+        headers: {
+          Authorization: cleanKey,
+          Accept: "application/json",
+        },
+      },
+    );
+  } catch (err) {
+    throw normalizeError(err);
+  }
+
+  if (response.ok) {
+    const body = (await response.json().catch(() => null)) as HenrikLeaderboardV3RawEnvelope | null;
+    const hit = body?.data?.players?.[0];
+    if (hit) {
+      const res: LeaderboardLookupResult = {
+        foundOnLeaderboard: true,
+        region,
+        name: hit.name || name,
+        tag: hit.tag || tag,
+        entry: normalizeLeaderboardPlayerV3(hit),
+        fallbackRank: null,
+      };
+      setCachedData(cacheKey, res);
+      return res;
+    }
+  } else if (response.status === 401 || response.status === 403) {
+    throw new ApiClientError(
+      "UNAUTHORIZED",
+      "APIキーが無効か、アクセス権限がありません。設定画面でキーを確認してください。",
+      response.status,
+    );
+  } else if (response.status === 429) {
+    throw new ApiClientError(
+      "RATE_LIMIT",
+      "APIのレートリミットに達しました。少し待ってから再試行してください。",
+      response.status,
+    );
+  }
+
+  // Not found on top 15,000 leaderboard -> check current rank via MMR v3 so user gets clear feedback
+  try {
+    const mmr = await henrikGet<HenrikMmrV3Data>(
+      `/valorant/v3/mmr/${encodeURIComponent(region)}/pc/${encodeURIComponent(name)}/${encodeURIComponent(tag)}`,
+      apiKey,
+    );
+    const lbPlacement =
+      typeof mmr.current?.leaderboard_placement === "number"
+        ? mmr.current.leaderboard_placement
+        : mmr.current?.leaderboard_placement?.rank ?? null;
+
+    if (lbPlacement && lbPlacement > 0) {
+      const res: LeaderboardLookupResult = {
+        foundOnLeaderboard: true,
+        region,
+        name: mmr.account?.name || name,
+        tag: mmr.account?.tag || tag,
+        entry: {
+          rank: lbPlacement,
+          puuid: mmr.account?.puuid ?? null,
+          name: mmr.account?.name || name,
+          tag: mmr.account?.tag || tag,
+          isAnonymized: false,
+          isBanned: false,
+          tierId: mmr.current.tier.id,
+          rr: mmr.current.rr,
+          wins: mmr.seasonal?.[0]?.wins ?? 0,
+          cardId: null,
+          cardSmallUrl: null,
+          cardWideUrl: null,
+        },
+        fallbackRank: null,
+      };
+      setCachedData(cacheKey, res);
+      return res;
+    }
+
+    const res: LeaderboardLookupResult = {
+      foundOnLeaderboard: false,
+      region,
+      name: mmr.account?.name || name,
+      tag: mmr.account?.tag || tag,
+      entry: null,
+      fallbackRank: {
+        tierId: mmr.current?.tier?.id ?? 0,
+        tierName: mmr.current?.tier?.name ?? "ランクなし",
+        rr: mmr.current?.rr ?? 0,
+      },
+    };
+    setCachedData(cacheKey, res);
+    return res;
+  } catch (err) {
+    const normalized = normalizeError(err);
+    if (normalized.kind === "NOT_FOUND") {
+      throw new ApiClientError(
+        "NOT_FOUND",
+        "プレイヤーが見つからないか、非公開です",
+        404,
+      );
+    }
+    throw normalized;
   }
 }

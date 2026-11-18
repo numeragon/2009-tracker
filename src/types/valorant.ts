@@ -434,6 +434,71 @@ export interface WeaponAsset {
   displayIcon?: string;
 }
 
+export interface HenrikLeaderboardV3Threshold {
+  tier: { id: number; name: string };
+  start_index: number;
+  threshold: number;
+}
+
+export interface HenrikLeaderboardV3Player {
+  card?: string | null;
+  title?: string | null;
+  is_banned?: boolean;
+  is_anonymized?: boolean;
+  puuid?: string | null;
+  name?: string | null;
+  tag?: string | null;
+  leaderboard_rank: number;
+  tier: number;
+  rr: number;
+  wins: number;
+  updated_at?: string;
+}
+
+export interface LeaderboardThresholdItem {
+  tierId: number;
+  tierName: string;
+  startIndex: number;
+  rrThreshold: number;
+}
+
+export interface LeaderboardPlayerItem {
+  rank: number;
+  puuid: string | null;
+  name: string;
+  tag: string;
+  isAnonymized: boolean;
+  isBanned: boolean;
+  tierId: number;
+  rr: number;
+  wins: number;
+  cardId: string | null;
+  cardSmallUrl: string | null;
+  cardWideUrl: string | null;
+}
+
+export interface LeaderboardSliceBundle {
+  region: Region;
+  totalPlayers: number;
+  startIndex: number;
+  updatedAtIso: string | null;
+  thresholds: LeaderboardThresholdItem[];
+  players: LeaderboardPlayerItem[];
+}
+
+export interface LeaderboardLookupResult {
+  foundOnLeaderboard: boolean;
+  region: Region;
+  name: string;
+  tag: string;
+  entry: LeaderboardPlayerItem | null;
+  fallbackRank?: {
+    tierId: number;
+    tierName: string;
+    rr: number;
+  } | null;
+}
+
 export interface ValorantAssetsCatalog {
   agentsById: Record<string, AgentAsset>;
   agentsByKey: Record<string, AgentAsset>;

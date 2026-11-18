@@ -1,39 +1,35 @@
 # #2009 tracker
 
-VALORANT のプレイヤー戦績・進行中の試合（ライブマッチ）を閲覧できる Windows デスクトップアプリ（Tauri 2 + React + TypeScript + Vite）です。
+VALORANT デスクトップ戦績トラッカー ＆ 100% GPU インスタントリプレイ録画・クリップ編集ツール（Windows / Tauri v2）。
 
-## 完成品フォルダ（ビルド出力先）
+## 主な機能
 
-ビルド結果はすべてプロジェクト直下の **`完成品`** フォルダ（`C:\Users\X280\Documents\vlrt-tracker\完成品`）に自動出力されます：
+- **プレイヤー戦績・RR推移・試合履歴詳細**: Riot ID (`Name#Tag`) でランク・ピークランク・K/D・ADR・HS%・エージェント統計・全ラウンドスコアボードを高速表示
+- **リージョン別リーダーボード**: 全6リージョン (`AP / KR / NA / EU / BR / LATAM`) の上位 15,000 名ランキング、Radiant / Immortal ボーダー RR 表示、TOP3 ポディウム、Riot ID による順位検索
+- **試合中（ライブ）自動検出**: 起動中の VALORANT からエージェント選択画面・試合中の全10人のランク・RR・ピークランク・勝率・K/D をリアルタイム取得
+- **インスタントリプレイ録画（100% GPU）**:
+  - DXGI Desktop Duplication + D3D11 NV12 + Media Foundation ハードウェア H.264 エンコーダー（NVENC / AMF / QuickSync）による超軽量バックグラウンド常時バッファ録画
+  - 試合中に `F9`（カスタマイズ可）を押すだけで直近 5秒〜5分を無劣化 MP4 として即座に保存
+  - 3チャンネル独立 WASAPI オーディオミキサー（プロセス分離されたゲーム音声 / ゲーム除外デスクトップ音声 / マイク最大200%）
+  - システムトレイ常駐・グローバルホットキー・Windows 自動起動対応
+- **クリップライブラリ＆マルチトラック動画編集**:
+  - フォルダ整理・外部動画インポート・Windows ごみ箱連携・高速キーフレームサムネイル＆音声波形キャッシュ
+  - トリミング・分割・静止画フレーム挿入・再生速度変更 (`0.25x〜4x`)・音量＆フェードカーブ・画面比率 (`16:9 / 9:16 / 1:1 / 4:3`)・90°回転＆反転・クロップ
+  - 無劣化ストリームコピー（1秒未満）および GPU ハードウェア再エンコード書き出し（Discord 共有向け最大ファイルサイズ MB 指定対応）
+- **自動アップデート**: GitHub Releases (`numeragon/2009-tracker`) と連携し、起動時に新バージョンを自動検知・ワンクリック更新
 
-- `2009 tracker (単体起動版).exe`（インストール不要・ポータブル版）
-- `2009 tracker_<version>_x64-setup.exe`（日本語対応インストーラー）
-- `2009 tracker_<version>_x64_en-US.msi`（MSI インストーラー）
-- `latest.json`（自動アップデート配信マニフェスト）
-
----
-
-## 自動アップデートと新バージョンの配信方法
-
-アプリ起動時（および30分ごと・設定画面の手動確認ボタン）に GitHub リポジトリ [`numeragon/2009-tracker`](https://github.com/numeragon/2009-tracker/releases) の最新リリースを確認し、新バージョンがあれば**自動でダウンロード・インストールして再起動**します。
-
-### 新しいバージョンをビルド＆GitHubへ自動アップロードするコマンド
-
-機能追加や変更を行ったあと、バージョン番号（例: `0.3.0`）を指定して以下を1行実行するだけで、**バージョン更新 → 署名付きビルド → `完成品` フォルダ出力 → GitHub Release への自動アップロード**まで完了します：
-
-```powershell
-cd C:\Users\X280\Documents\vlrt-tracker
-npm.cmd run publish:update -- 0.3.0
-```
-
-GitHub Actions 上（クラウド側）で自動ビルド＆リリース配信させる場合（PCでのビルド待ち時間ゼロ）：
+## ビルド・リリースコマンド
 
 ```powershell
-npm.cmd run release:cloud -- 0.3.0
-```
-
-ローカルで `完成品` フォルダへのビルドだけ行う場合：
-
-```powershell
+# ローカルビルド＋「完成品」フォルダへ単体起動版 .exe とインストーラーを出力
 npm.cmd run build:release
+
+# バージョン更新＋ビルド＋「完成品」出力＋GitHub Releases 自動アップロード（自動アップデート配信）
+npm.cmd run publish:update 0.3.0
 ```
+
+## ライセンス・クレジット
+
+本ソフトウェアは [GPL-3.0-or-later](LICENSE) ライセンスのもとで公開されています。
+
+- インスタントリプレイ録画および Media Foundation GPU クリップ編集エンジンはオープンソースの [santiremedi/clippy](https://github.com/santiremedi/clippy) (`GPL-3.0-or-later`) のコードをベースに移植・統合しています。

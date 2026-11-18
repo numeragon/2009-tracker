@@ -1,18 +1,30 @@
-import { Home, Pin, Radio, Settings, Trophy, X } from "lucide-react";
+import { Disc, Film, Home, Pin, Radio, Settings, Trophy, X } from "lucide-react";
 import type { Region, SavedPlayerEntry, ValorantAssetsCatalog } from "../types/valorant";
 import { playerKey } from "../lib/storage";
 import { resolveTierAsset } from "../lib/valorantAssets";
 
-export type AppRoute = "home" | "live" | "profile" | "match-detail" | "leaderboard" | "settings";
+export type AppRoute =
+  | "home"
+  | "live"
+  | "recorder"
+  | "clips"
+  | "profile"
+  | "match-detail"
+  | "leaderboard"
+  | "settings";
 
 interface SidebarProps {
   currentRoute: AppRoute;
   activePlayerKey: string | null;
   hasApiKey: boolean;
+  isRecordingActive?: boolean;
+  saveHotkeyLabel?: string;
   favorites: SavedPlayerEntry[];
   history: SavedPlayerEntry[];
   assets: ValorantAssetsCatalog;
-  onNavigate: (route: "home" | "live" | "leaderboard" | "settings") => void;
+  onNavigate: (
+    route: "home" | "live" | "recorder" | "clips" | "leaderboard" | "settings",
+  ) => void;
   onSelectSavedPlayer: (name: string, tag: string, region: Region) => void;
   onRemoveFavorite: (entry: SavedPlayerEntry) => void;
   onRemoveHistory: (name: string, tag: string) => void;
@@ -23,6 +35,8 @@ export function Sidebar({
   currentRoute,
   activePlayerKey,
   hasApiKey,
+  isRecordingActive = false,
+  saveHotkeyLabel,
   favorites,
   history,
   assets,
@@ -33,15 +47,24 @@ export function Sidebar({
   onClearHistory,
 }: SidebarProps) {
   const navItems: Array<{
-    id: "home" | "live" | "leaderboard" | "settings";
+    id: "home" | "live" | "recorder" | "clips" | "leaderboard" | "settings";
     label: string;
     icon: typeof Home;
     badge?: string;
     dot?: boolean;
+    pulseDot?: boolean;
   }> = [
     { id: "home", label: "ホーム", icon: Home },
     { id: "live", label: "試合中（ライブ）", icon: Radio },
-    { id: "leaderboard", label: "リーダーボード", icon: Trophy, badge: "Phase 2" },
+    {
+      id: "recorder",
+      label: "録画・リプレイ",
+      icon: Disc,
+      badge: isRecordingActive ? saveHotkeyLabel : undefined,
+      pulseDot: isRecordingActive,
+    },
+    { id: "clips", label: "クリップ編集", icon: Film },
+    { id: "leaderboard", label: "リーダーボード", icon: Trophy },
     { id: "settings", label: "設定", icon: Settings, dot: !hasApiKey },
   ];
 
@@ -89,18 +112,25 @@ export function Sidebar({
                 <span>{item.label}</span>
               </span>
 
-              {item.badge && (
-                <span className="font-num text-[10px] px-1.5 py-0.5 rounded border border-[rgba(255,255,255,0.09)] text-[#5c5c5c]">
-                  {item.badge}
-                </span>
-              )}
-
-              {item.dot && (
-                <span
-                  title="APIキー未設定"
-                  className="w-1.5 h-1.5 rounded-full bg-[#ededed]"
-                />
-              )}
+              <span className="flex items-center gap-2">
+                {item.pulseDot && (
+                  <span
+                    title="インスタントリプレイ録画中"
+                    className="w-1.5 h-1.5 rounded-full bg-[#ededed] animate-pulse"
+                  />
+                )}
+                {item.badge && (
+                  <span className="font-num text-[10px] px-1.5 py-0.5 rounded border border-[rgba(255,255,255,0.09)] text-[#8f8f8f]">
+                    {item.badge}
+                  </span>
+                )}
+                {item.dot && (
+                  <span
+                    title="APIキー未設定"
+                    className="w-1.5 h-1.5 rounded-full bg-[#ededed]"
+                  />
+                )}
+              </span>
             </button>
           );
         })}

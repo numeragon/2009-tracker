@@ -1,4 +1,4 @@
-import { KeyRound, Pin, History, Radio } from "lucide-react";
+import { Disc, KeyRound, Pin, History, Radio } from "lucide-react";
 import type { Region, SavedPlayerEntry } from "../types/valorant";
 import type { ApiClientError } from "../lib/errors";
 import { ErrorBanner } from "./ErrorBanner";
@@ -12,6 +12,7 @@ interface HomeViewProps {
   hasApiKey: boolean;
   onOpenSettings: () => void;
   onOpenLiveMatch: () => void;
+  onOpenRecorder?: () => void;
   favorites: SavedPlayerEntry[];
   history: SavedPlayerEntry[];
   onSelectSavedPlayer: (name: string, tag: string, region: Region) => void;
@@ -27,6 +28,7 @@ export function HomeView({
   hasApiKey,
   onOpenSettings,
   onOpenLiveMatch,
+  onOpenRecorder,
   favorites,
   history,
   onSelectSavedPlayer,
@@ -58,14 +60,26 @@ export function HomeView({
             onSearch={onSearch}
             isLoading={isLoading}
           />
-          <button
-            type="button"
-            onClick={onOpenLiveMatch}
-            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a] hover:border-[rgba(255,255,255,0.22)] text-xs text-[#8f8f8f] hover:text-[#ededed] transition-colors cursor-pointer"
-          >
-            <Radio className="w-3.5 h-3.5 text-[var(--semantic-win)]" />
-            <span>進行中の試合（ライブマッチ）を表示</span>
-          </button>
+          <div className="flex items-center justify-center gap-2.5 flex-wrap">
+            <button
+              type="button"
+              onClick={onOpenLiveMatch}
+              className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a] hover:border-[rgba(255,255,255,0.22)] text-xs text-[#8f8f8f] hover:text-[#ededed] transition-colors cursor-pointer"
+            >
+              <Radio className="w-3.5 h-3.5 text-[var(--semantic-win)]" />
+              <span>進行中の試合（ライブマッチ）</span>
+            </button>
+            {onOpenRecorder && (
+              <button
+                type="button"
+                onClick={onOpenRecorder}
+                className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a] hover:border-[rgba(255,255,255,0.22)] text-xs text-[#8f8f8f] hover:text-[#ededed] transition-colors cursor-pointer"
+              >
+                <Disc className="w-3.5 h-3.5 text-[#ededed]" />
+                <span>インスタントリプレイ録画・編集</span>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Inline Error if search triggered an error */}
