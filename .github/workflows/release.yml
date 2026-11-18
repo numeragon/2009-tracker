@@ -41,7 +41,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
-          releaseName: "Valorant Tracker v__VERSION__"
-          releaseBody: "Valorant Tracker 自動アップデート配信リリース"
+          releaseName: "#2009 tracker v__VERSION__"
+          releaseBody: "#2009 tracker 自動アップデート配信リリース"
           releaseDraft: false
           prerelease: false

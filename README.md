@@ -1,4 +1,4 @@
-# Valorant Tracker
+# #2009 tracker
 
 VALORANT のプレイヤー戦績・進行中の試合（ライブマッチ）を閲覧できる Windows デスクトップアプリ（Tauri 2 + React + TypeScript + Vite）です。
 
@@ -6,9 +6,9 @@ VALORANT のプレイヤー戦績・進行中の試合（ライブマッチ）�
 
 ビルド結果はすべてプロジェクト直下の **`完成品`** フォルダ（`C:\Users\X280\Documents\vlrt-tracker\完成品`）に自動出力されます：
 
-- `Valorant Tracker (単体起動版).exe`（インストール不要・ポータブル版）
-- `Valorant Tracker_<version>_x64-setup.exe`（日本語対応インストーラー）
-- `Valorant Tracker_<version>_x64_en-US.msi`（MSI インストーラー）
+- `2009 tracker (単体起動版).exe`（インストール不要・ポータブル版）
+- `2009 tracker_<version>_x64-setup.exe`（日本語対応インストーラー）
+- `2009 tracker_<version>_x64_en-US.msi`（MSI インストーラー）
 - `latest.json`（自動アップデート配信マニフェスト）
 
 ---
@@ -19,17 +19,17 @@ VALORANT のプレイヤー戦績・進行中の試合（ライブマッチ）�
 
 ### 新しいバージョンをビルド＆GitHubへ自動アップロードするコマンド
 
-機能追加や変更を行ったあと、バージョン番号（例: `0.2.0`）を指定して以下を1行実行するだけで、**バージョン更新 → 署名付きビルド → `完成品` フォルダ出力 → GitHub Release への自動アップロード**まで完了します：
+機能追加や変更を行ったあと、バージョン番号（例: `0.3.0`）を指定して以下を1行実行するだけで、**バージョン更新 → 署名付きビルド → `完成品` フォルダ出力 → GitHub Release への自動アップロード**まで完了します：
 
 ```powershell
 cd C:\Users\X280\Documents\vlrt-tracker
-npm.cmd run publish:update -- 0.2.0
+npm.cmd run publish:update -- 0.3.0
 ```
 
 GitHub Actions 上（クラウド側）で自動ビルド＆リリース配信させる場合（PCでのビルド待ち時間ゼロ）：
 
 ```powershell
-npm.cmd run release:cloud -- 0.2.0
+npm.cmd run release:cloud -- 0.3.0
 ```
 
 ローカルで `完成品` フォルダへのビルドだけ行う場合：

@@ -38,8 +38,8 @@ export function HomeView({
       <div className="w-full max-w-xl space-y-8">
         {/* Heading */}
         <div className="text-center space-y-2.5">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a] text-[11px] text-[#8f8f8f] font-num">
-            VALORANT PLAYER STATS
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a]/80 text-[11px] text-[#8f8f8f] font-num">
+            #2009 TRACKER · VALORANT STATS
           </div>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-[#ededed]">
             プレイヤー戦績を検索

@@ -51,14 +51,14 @@ const msiDir = path.join(releaseDir, "bundle", "msi");
 // 1. Standalone Portable .exe
 const standaloneSrc = path.join(releaseDir, "valorant-tracker.exe");
 if (fs.existsSync(standaloneSrc)) {
-  const standaloneDst = path.join(COMPLETED_DIR, "Valorant Tracker (単体起動版).exe");
+  const standaloneDst = path.join(COMPLETED_DIR, "2009 tracker (単体起動版).exe");
   fs.copyFileSync(standaloneSrc, standaloneDst);
   console.log(`[完成品] Copied: ${standaloneDst}`);
 }
 
 // 2. NSIS Setup .exe + .sig + latest.json
 let sigContent = null;
-let setupAssetFileName = `Valorant-Tracker_${version}_x64-setup.exe`;
+let setupAssetFileName = `2009-tracker_${version}_x64-setup.exe`;
 
 if (fs.existsSync(nsisDir)) {
   for (const f of fs.readdirSync(nsisDir)) {
@@ -92,7 +92,7 @@ if (fs.existsSync(msiDir)) {
 if (sigContent) {
   const latestJson = {
     version,
-    notes: `Valorant Tracker v${version}`,
+    notes: `#2009 tracker v${version}`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {

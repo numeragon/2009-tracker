@@ -54,11 +54,16 @@ export function Sidebar({
           onClick={() => onNavigate("home")}
           className="flex items-center gap-2.5 text-left cursor-pointer group"
         >
-          <div className="w-6 h-6 rounded-[7px] border border-[rgba(255,255,255,0.16)] bg-black flex items-center justify-center font-num text-[11px] font-semibold text-[#ededed] group-hover:border-white/35 transition-colors">
-            VT
-          </div>
-          <span className="text-sm font-semibold tracking-tight text-[#ededed]">
-            Valorant Tracker
+          <img
+            src="/app-icon.png"
+            alt="#2009 tracker"
+            className="w-7 h-7 rounded-[8px] object-contain shrink-0 transition-transform duration-150 group-hover:scale-105"
+          />
+          <span className="text-sm tracking-tight flex items-baseline gap-1">
+            <span className="font-num font-semibold text-[#ededed]">#2009</span>
+            <span className="font-medium text-[#8f8f8f] group-hover:text-[#ededed] transition-colors">
+              tracker
+            </span>
           </span>
         </button>
       </div>

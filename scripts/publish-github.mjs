@@ -133,8 +133,8 @@ async function main() {
       body: JSON.stringify({
         tag_name: tag,
         target_commitish: "main",
-        name: `Valorant Tracker ${tag}`,
-        body: `Valorant Tracker ${tag} 自動アップデート対応リリース`,
+        name: `#2009 tracker ${tag}`,
+        body: `#2009 tracker ${tag} 自動アップデート対応リリース`,
         draft: false,
         prerelease: false,
       }),
@@ -147,7 +147,7 @@ async function main() {
   const nsisDir = path.join(ROOT, "src-tauri", "target", "release", "bundle", "nsis");
   let setupSrc = null;
   let sigSrc = null;
-  let setupUploadName = `Valorant-Tracker_${version}_x64-setup.exe`;
+  let setupUploadName = `2009-tracker_${version}_x64-setup.exe`;
 
   if (fs.existsSync(nsisDir)) {
     for (const f of fs.readdirSync(nsisDir)) {
@@ -170,7 +170,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `Valorant Tracker v${version}`,
+    notes: `#2009 tracker v${version}`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {
@@ -201,7 +201,7 @@ async function main() {
   const standaloneExe = path.join(ROOT, "src-tauri", "target", "release", "valorant-tracker.exe");
   if (fs.existsSync(standaloneExe)) {
     filesToUpload.push({
-      name: `Valorant-Tracker_${version}_Portable.exe`,
+      name: `2009-tracker_${version}_Portable.exe`,
       path: standaloneExe,
       contentType: "application/octet-stream",
     });

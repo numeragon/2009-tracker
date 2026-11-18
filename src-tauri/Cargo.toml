@@ -1,7 +1,7 @@
 [package]
 name = "valorant-tracker"
-version = "0.1.0"
-description = "VALORANT Tracker Desktop App"
+version = "0.2.0"
+description = "#2009 tracker - VALORANT Desktop Tracker"
 authors = ["local"]
 edition = "2024"
 
