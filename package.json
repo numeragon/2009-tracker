@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "build:release": "node scripts/build-and-collect.mjs",
     "collect": "node scripts/build-and-collect.mjs --collect-only",
-    "publish:update": "node scripts/publish-github.mjs"
+    "publish:update": "node scripts/publish-github.mjs",
+    "release:cloud": "node scripts/push-version-tag.mjs"
   },
   "dependencies": {
     "@fontsource/geist-mono": "^5.2.5",

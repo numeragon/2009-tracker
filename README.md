@@ -26,6 +26,12 @@ cd C:\Users\X280\Documents\vlrt-tracker
 npm.cmd run publish:update -- 0.2.0
 ```
 
+GitHub Actions 上（クラウド側）で自動ビルド＆リリース配信させる場合（PCでのビルド待ち時間ゼロ）：
+
+```powershell
+npm.cmd run release:cloud -- 0.2.0
+```
+
 ローカルで `完成品` フォルダへのビルドだけ行う場合：
 
 ```powershell
