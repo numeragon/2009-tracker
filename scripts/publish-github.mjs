@@ -134,7 +134,7 @@ async function main() {
         tag_name: tag,
         target_commitish: "main",
         name: `#2009 tracker ${tag}`,
-        body: `# #2009 tracker ${tag}\n- プロフィールに「エージェント別」「マップ別」スタッツタブを追加（使用回数・勝率・W/L・K/D・ACS・HS%）\n- 直近の取得済み試合から自動集計し、追加のAPI呼び出しなしで表示\n- 起動画面を軽量なターミナル風 CLI 表示に刷新\n- ライブマッチに保存タブ機能を追加（試合ロビーのスナップショットを保持・切替）\n- README に起動方法・APIキー設定手順を追記`,
+        body: `# #2009 tracker ${tag}\n- クロスヘア保存: 起動中のクライアントから現在のクロスヘアを取得し、プレビュー付きで保存・共有コード（\`0;P;...\`）のコピー/インポートに対応\n- ショップ確認: デイリーストア・ナイトマーケット・注目バンドル・VP/RP 残高をリセットまでの残り時間付きで表示\n- エージェント選択中に相手チームのピック状況（確定 / 選択中 / 未選択）を一覧表示\n- 試合開始前に自分のチームの先行・後攻（前半: 攻撃 / 防御）を表示\n- 匿名設定（インコグニート）のプレイヤーも名前を解決して表示し、「匿名」バッジで識別`,
         draft: false,
         prerelease: false,
       }),
@@ -171,7 +171,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `#2009 tracker v${version} - エージェント別・マップ別スタッツ追加、起動画面とライブマッチ保存タブを改善`,
+    notes: `#2009 tracker v${version} - クロスヘア保存・ショップ確認・先行後攻/相手ピック表示・匿名プレイヤーの名前解決を追加`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {
