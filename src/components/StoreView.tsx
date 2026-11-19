@@ -2,15 +2,29 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Clock,
   Loader2,
+  LogIn,
+  LogOut,
   RefreshCw,
   ShoppingBag,
   Sparkles,
+  UserRound,
   Wallet,
 } from "lucide-react";
-import type { Region, StoreCatalog, StorefrontViewData } from "../types/valorant";
+import type {
+  Region,
+  RiotSession,
+  StoreCatalog,
+  StorefrontViewData,
+} from "../types/valorant";
 import {
+  clearRiotSessionInBackend,
+  fetchLastRiotSession,
   fetchStorefrontFromClient,
+  loadRiotSession,
+  onRiotLoginResult,
   parseStorefront,
+  saveRiotSession,
+  startRiotLogin,
 } from "../lib/localClientApi";
 import { loadStoreCatalog, resolveStoreSkin } from "../lib/storeCatalog";
 
@@ -43,7 +57,12 @@ function priceRemaining(fetchedAt: number, seconds: number, now: number): number
 }
 
 export function StoreView({ defaultRegion }: StoreViewProps) {
-  const [loading, setLoading] = useState(true);
+  const [session, setSession] = useState<RiotSession | null>(() => loadRiotSession());
+  const [loginPending, setLoginPending] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [authExpired, setAuthExpired] = useState(false);
+
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<(StorefrontViewData & { fetchedAt: number }) | null>(
     null,
@@ -57,11 +76,90 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
     return () => clearInterval(id);
   }, []);
 
+  // Listen for the result of the embedded Riot login window.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+
+    void onRiotLoginResult((result) => {
+      if (disposed) return;
+      setLoginPending(false);
+      if (result.status === "ok" && result.session) {
+        saveRiotSession(result.session);
+        setSession(result.session);
+        setAuthExpired(false);
+        setError(null);
+        setLoginError(null);
+      } else {
+        setLoginError(result.message ?? "ログインに失敗しました。");
+      }
+    }).then((fn) => {
+      if (disposed) {
+        fn();
+      } else {
+        unlisten = fn;
+      }
+    }).catch(() => {
+      // Event bridge unavailable (e.g. browser preview); ignore.
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // If the page missed the login event (e.g. the tab changed while the Riot
+  // window was open), recover the in-memory session from the Rust side.
+  useEffect(() => {
+    if (session) return;
+    let cancelled = false;
+    void fetchLastRiotSession().then((restored) => {
+      if (!cancelled && restored) {
+        saveRiotSession(restored);
+        setSession(restored);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  const beginLogin = useCallback(async () => {
+    setLoginError(null);
+    setLoginPending(true);
+    try {
+      await startRiotLogin();
+    } catch (err) {
+      setLoginPending(false);
+      setLoginError(
+        err instanceof Error ? err.message : "ログインウィンドウを開けませんでした。",
+      );
+    }
+  }, []);
+
+  const logout = useCallback(() => {
+    saveRiotSession(null);
+    void clearRiotSessionInBackend();
+    setSession(null);
+    setData(null);
+    setError(null);
+    setAuthExpired(false);
+    setLoginError(null);
+  }, []);
+
   const refresh = useCallback(async () => {
+    if (!session) return;
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchStorefrontFromClient(defaultRegion);
+      const result = await fetchStorefrontFromClient(defaultRegion, session);
+
+      if (result.authExpired) {
+        setAuthExpired(true);
+        setData(null);
+        return;
+      }
 
       if (!result.ok || !result.storefront) {
         setData(null);
@@ -87,11 +185,11 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
     } finally {
       setLoading(false);
     }
-  }, [defaultRegion]);
+  }, [defaultRegion, session]);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    if (session) void refresh();
+  }, [refresh, session]);
 
   // The skin catalog comes from a public API and can be slow; never block the
   // store itself on it.
@@ -125,6 +223,11 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
   const itemLabel = (name?: string) =>
     name ?? (catalogLoading ? "読み込み中…" : "アイテム情報なし");
 
+  const accountName =
+    session && (session.gameName || session.tagLine)
+      ? `${session.gameName}${session.tagLine ? `#${session.tagLine}` : ""}`
+      : "Riotアカウント";
+
   return (
     <div className="max-w-5xl mx-auto py-8 px-6 space-y-6 vt-animate-in">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -136,11 +239,26 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
             </h1>
           </div>
           <p className="text-xs text-[#8f8f8f] mt-1.5">
-            起動中のVALORANTクライアントから、デイリーストア・ナイトマーケット・バンドルを直接取得します。
+            Riotアカウントでログインして、ゲームを起動していなくてもデイリーストア・ナイトマーケット・バンドルを確認できます。
           </p>
         </div>
 
         <div className="flex items-center gap-2.5 self-start sm:self-center shrink-0">
+          {session && (
+            <div className="flex items-center gap-2 h-9 px-3 rounded-[12px] border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a] text-[11px] max-w-[220px]">
+              <UserRound className="w-3.5 h-3.5 text-[#5c5c5c] shrink-0" />
+              <span className="text-[#ededed] truncate">{accountName}</span>
+              <button
+                type="button"
+                title="ログアウト"
+                onClick={logout}
+                className="p-0.5 rounded text-[#5c5c5c] hover:text-[#ededed] cursor-pointer shrink-0"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+
           {data && (data.vp !== null || data.rp !== null) && (
             <div className="flex items-center gap-2 h-9 px-3 rounded-[12px] border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a] text-[11px]">
               <Wallet className="w-3.5 h-3.5 text-[#5c5c5c]" />
@@ -159,32 +277,101 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={() => void refresh()}
-            disabled={loading}
-            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium rounded-[12px] bg-[#ededed] text-black hover:bg-white transition-colors duration-150 disabled:opacity-50 cursor-pointer"
-          >
-            {loading ? (
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <RefreshCw className="w-3.5 h-3.5" />
-            )}
-            <span>再取得</span>
-          </button>
+          {session && (
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              disabled={loading}
+              className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium rounded-[12px] bg-[#ededed] text-black hover:bg-white transition-colors duration-150 disabled:opacity-50 cursor-pointer"
+            >
+              {loading ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="w-3.5 h-3.5" />
+              )}
+              <span>再取得</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {error && (
+      {!session && (
+        <section className="vt-panel p-8 max-w-xl space-y-4">
+          <div className="w-10 h-10 rounded-[12px] border border-[rgba(255,255,255,0.09)] bg-black flex items-center justify-center">
+            <LogIn className="w-4 h-4 text-[#8f8f8f]" />
+          </div>
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-medium text-[#ededed]">
+              Riotアカウントでログイン
+            </h2>
+            <p className="text-xs text-[#8f8f8f] leading-relaxed">
+              Riotのログインページが専用ウィンドウで開きます。ログインすると、VALORANT
+              を起動していなくてもストアを取得できます。
+            </p>
+            <p className="text-[11px] text-[#5c5c5c] leading-relaxed">
+              パスワードがこのアプリに保存されることはありません。ログイン状態はRiotのページ側で管理され、次回は自動的に再利用されます。
+            </p>
+          </div>
+
+          {loginError && (
+            <p className="text-[11px] text-[var(--semantic-loss)] leading-relaxed">
+              {loginError}
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={() => void beginLogin()}
+            disabled={loginPending}
+            className="inline-flex items-center gap-2 h-9 px-4 text-xs font-medium rounded-[12px] bg-[#ededed] text-black hover:bg-white transition-colors duration-150 disabled:opacity-50 cursor-pointer"
+          >
+            {loginPending ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <LogIn className="w-3.5 h-3.5" />
+            )}
+            <span>{loginPending ? "ログイン待機中…" : "ログイン"}</span>
+          </button>
+        </section>
+      )}
+
+      {session && authExpired && (
+        <div className="vt-panel p-5 space-y-3">
+          <p className="text-xs text-[#ededed]">
+            Riotセッションの有効期限が切れました。
+          </p>
+          <p className="text-[11px] text-[#8f8f8f] leading-relaxed">
+            再ログインするとストアを取得できます。Riotのログイン状態が残っていれば、ウィンドウは自動的に閉じます。
+          </p>
+          {loginError && (
+            <p className="text-[11px] text-[var(--semantic-loss)]">{loginError}</p>
+          )}
+          <button
+            type="button"
+            onClick={() => void beginLogin()}
+            disabled={loginPending}
+            className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium rounded-[12px] bg-[#ededed] text-black hover:bg-white transition-colors duration-150 disabled:opacity-50 cursor-pointer"
+          >
+            {loginPending ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <LogIn className="w-3.5 h-3.5" />
+            )}
+            <span>{loginPending ? "ログイン待機中…" : "再ログイン"}</span>
+          </button>
+        </div>
+      )}
+
+      {session && error && !authExpired && (
         <div className="vt-panel p-5 space-y-2">
           <p className="text-xs text-[#8f8f8f] leading-relaxed">{error}</p>
           <p className="text-[11px] text-[#5c5c5c] leading-relaxed">
-            VALORANT にログインした状態で起動すると取得できます。ストアの反映にはゲーム内で一度ストアを開く必要がある場合があります。
+            ストアの反映には、ゲーム内で一度ストアを開く必要がある場合があります。時間をおいて再取得してください。
           </p>
         </div>
       )}
 
-      {loading && !data && (
+      {session && loading && !data && !authExpired && (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {Array.from({ length: 4 }).map((_, index) => (
             <div key={index} className="vt-panel p-4 space-y-3">
@@ -196,7 +383,7 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
         </div>
       )}
 
-      {data && (
+      {session && data && !authExpired && (
         <>
           {/* Daily store */}
           <section className="space-y-3">
@@ -388,7 +575,7 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
           )}
 
           <p className="text-[10px] text-[#5c5c5c] leading-relaxed">
-            価格・ラインナップはRiotクライアントから取得した時点の情報です。表示は
+            価格・ラインナップはRiotから取得した時点の情報です。表示は
             {defaultRegion.toUpperCase()} リージョンのアカウント設定に基づきます。
           </p>
         </>

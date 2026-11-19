@@ -424,6 +424,9 @@ export interface LiveMatchPlayerRaw {
   isIncognito: boolean;
   cardId: string;
   pregameTier: number;
+  /** Party lobby only */
+  partyReady?: boolean | null;
+  isPartyOwner?: boolean | null;
 }
 
 export interface LiveMatchResponse {
@@ -564,6 +567,26 @@ export interface StorefrontFetchResponse {
   storefront: unknown;
   wallet: unknown;
   fetchedAt: number;
+  /** "session" = Riot account login, "client" = local Riot Client */
+  authSource?: "session" | "client" | null;
+  authExpired?: boolean;
+}
+
+/** Riot Sign-On session obtained through the embedded Riot login page. */
+export interface RiotSession {
+  puuid: string;
+  gameName: string;
+  tagLine: string;
+  accessToken: string;
+  entitlements: string;
+  region: string;
+  obtainedAt: number;
+}
+
+export interface RiotLoginResult {
+  status: "ok" | "error";
+  message: string | null;
+  session: RiotSession | null;
 }
 
 export interface StoreItemRef {

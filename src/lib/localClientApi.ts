@@ -1,9 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CrosshairFetchResponse,
   FeaturedBundleItem,
   NightMarketOffer,
   Region,
+  RiotLoginResult,
+  RiotSession,
   StoreItemRef,
   StorefrontFetchResponse,
   StorefrontViewData,
@@ -31,6 +34,7 @@ export async function fetchCrosshairFromClient(): Promise<CrosshairFetchResponse
 
 export async function fetchStorefrontFromClient(
   region: Region,
+  session: RiotSession | null = null,
 ): Promise<StorefrontFetchResponse> {
   if (!isTauriRuntime()) {
     return {
@@ -42,11 +46,91 @@ export async function fetchStorefrontFromClient(
       storefront: null,
       wallet: null,
       fetchedAt: Date.now(),
+      authSource: null,
+      authExpired: false,
     };
   }
   return invoke<StorefrontFetchResponse>("fetch_storefront", {
     regionFallback: region,
+    session: session
+      ? {
+          accessToken: session.accessToken,
+          entitlements: session.entitlements,
+          puuid: session.puuid,
+          region: session.region,
+        }
+      : null,
   });
+}
+
+/* ---------- Riot account login (embedded Riot page) ---------- */
+
+const RIOT_SESSION_KEY = "vt:riot_session_v1";
+
+export function loadRiotSession(): RiotSession | null {
+  try {
+    const raw = localStorage.getItem(RIOT_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<RiotSession>;
+    if (!parsed.accessToken || !parsed.puuid) return null;
+    return {
+      puuid: parsed.puuid,
+      gameName: parsed.gameName ?? "",
+      tagLine: parsed.tagLine ?? "",
+      accessToken: parsed.accessToken,
+      entitlements: parsed.entitlements ?? "",
+      region: parsed.region ?? "",
+      obtainedAt: parsed.obtainedAt ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveRiotSession(session: RiotSession | null) {
+  try {
+    if (session) {
+      localStorage.setItem(RIOT_SESSION_KEY, JSON.stringify(session));
+    } else {
+      localStorage.removeItem(RIOT_SESSION_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export async function startRiotLogin(): Promise<void> {
+  if (!isTauriRuntime()) {
+    throw new Error("Riotログインはデスクトップアプリ（.exe）でのみ利用可能です。");
+  }
+  await invoke("riot_login");
+}
+
+export function onRiotLoginResult(
+  handler: (result: RiotLoginResult) => void,
+): Promise<UnlistenFn> {
+  // Keep the store usable in a plain browser (UI development) without Tauri.
+  if (!isTauriRuntime()) return Promise.resolve(() => {});
+  return listen<RiotLoginResult>("riot-auth-result", (event) => handler(event.payload));
+}
+
+/** Session recovered from the Rust side (in case the page missed the event). */
+export async function fetchLastRiotSession(): Promise<RiotSession | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invoke<RiotSession | null>("riot_last_session");
+  } catch {
+    return null;
+  }
+}
+
+export async function clearRiotSessionInBackend(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await invoke("riot_logout");
+  } catch {
+    // Ignore
+  }
 }
 
 type Json = Record<string, unknown>;

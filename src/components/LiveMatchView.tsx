@@ -225,10 +225,31 @@ function LiveTeamTable({
                               YOU
                             </span>
                           )}
+
+                          {p.isPartyOwner && (
+                            <span className="text-[9px] px-1 py-0.2 rounded border border-[rgba(255,255,255,0.16)] text-[#8f8f8f] shrink-0">
+                              リーダー
+                            </span>
+                          )}
+
+                          {p.partyReady === true && (
+                            <span className="text-[9px] px-1 py-0.2 rounded border border-[var(--semantic-win-border)] text-[var(--semantic-win)] shrink-0">
+                              準備完了
+                            </span>
+                          )}
+
+                          {p.partyReady === false && (
+                            <span className="text-[9px] px-1 py-0.2 rounded border border-[rgba(255,255,255,0.12)] text-[#5c5c5c] shrink-0">
+                              未準備
+                            </span>
+                          )}
                         </div>
 
                         <div className="text-[11px] text-[#5c5c5c] flex items-center gap-1.5 mt-0.5">
-                          <span>{agent?.displayName || "エージェント未確定"}</span>
+                          <span>
+                            {agent?.displayName ||
+                              (isPregame ? "エージェント未確定" : "パーティメンバー")}
+                          </span>
                           {isPregame && (
                             <span className="text-[10px] text-[#8f8f8f]">
                               ({p.selectionState === "locked"
@@ -448,7 +469,7 @@ export function LiveMatchView({
         setLiveData(resp);
         setIsLoading(false);
 
-        if ((resp.status === "IN_GAME" || resp.status === "PREGAME") && resp.players.length > 0) {
+        if ((resp.status === "IN_GAME" || resp.status === "PREGAME" || resp.status === "IN_MENU") && resp.players.length > 0) {
           const effectiveRegion = normalizeRegion(resp.detectedRegion, defaultRegion);
 
           // Only fetch players we haven't already resolved (unless manual refresh was clicked)
@@ -589,6 +610,8 @@ export function LiveMatchView({
   const viewRanks = activeSavedTab ? activeSavedTab.ranksByPuuid : ranksByPuuid;
   const status = viewData?.status ?? "NOT_RUNNING";
   const isActiveMatch = status === "IN_GAME" || status === "PREGAME";
+  const isLobby = status === "IN_MENU" && (viewData?.players.length ?? 0) > 0;
+  const hasRoster = isActiveMatch || isLobby;
   const effectiveRegion = activeSavedTab
     ? activeSavedTab.region
     : normalizeRegion(viewData?.detectedRegion, defaultRegion);
@@ -683,7 +706,7 @@ export function LiveMatchView({
 
       {/* Top Control Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center gap-2.5 flex-wrap">
             <h1 className="text-xl font-semibold tracking-tight text-[#ededed]">
               {activeSavedTab ? `保存済みマッチ: ${activeSavedTab.label}` : "ライブマッチ（試合中情報）"}
@@ -718,16 +741,16 @@ export function LiveMatchView({
           <p className="text-xs text-[#8f8f8f] mt-1">
             {activeSavedTab
               ? "保存した試合スナップショットを表示しています。別のタブへ移動しても状態はそのまま保持されます。"
-              : "起動中の VALORANT クライアントから現在のマッチ参加者とランク・K/D を自動検出します（タブ切替時も取得済みデータを保持）。"}
+              : "起動中の VALORANT クライアントから、ロビーのパーティメンバーやマッチ参加者とランク・K/D を自動検出します（タブ切替時も取得済みデータを保持）。"}
           </p>
         </div>
 
         {!activeSavedTab && (
-          <div className="flex items-center gap-2.5 self-start sm:self-center">
+          <div className="flex items-center gap-2.5 self-start sm:self-center shrink-0">
             <button
               type="button"
               onClick={() => setAutoRefresh((v) => !v)}
-              className={`h-9 px-3.5 text-xs rounded-[12px] border transition-colors duration-150 cursor-pointer ${
+              className={`h-9 px-3.5 text-xs rounded-[12px] border transition-colors duration-150 cursor-pointer whitespace-nowrap ${
                 autoRefresh
                   ? "bg-white/[0.07] border-white/25 text-[#ededed]"
                   : "bg-[#0a0a0a] border-[rgba(255,255,255,0.09)] text-[#8f8f8f] hover:text-[#ededed]"
@@ -740,7 +763,7 @@ export function LiveMatchView({
               type="button"
               onClick={() => void loadLiveMatch({ manual: true })}
               disabled={isLoading}
-              className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium rounded-[12px] bg-[#ededed] text-black hover:bg-white transition-colors duration-150 disabled:opacity-50 cursor-pointer"
+              className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium rounded-[12px] bg-[#ededed] text-black hover:bg-white transition-colors duration-150 disabled:opacity-50 cursor-pointer whitespace-nowrap"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin" : ""}`} />
               <span>再取得</span>
@@ -756,7 +779,7 @@ export function LiveMatchView({
         </div>
       )}
 
-      {!isActiveMatch ? (
+      {!hasRoster ? (
         <div className="vt-panel p-10 text-center space-y-3">
           <div className="w-10 h-10 mx-auto rounded-[12px] border border-[rgba(255,255,255,0.09)] bg-black flex items-center justify-center">
             <Radio className="w-4 h-4 text-[#8f8f8f]" />
@@ -776,7 +799,34 @@ export function LiveMatchView({
         </div>
       ) : (
         <div className="space-y-6">
-          {/* Active Match Banner */}
+          {isLobby ? (
+            <div className="vt-panel relative overflow-hidden p-6">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <h2 className="text-lg font-semibold text-[#ededed]">
+                      パーティロビー
+                    </h2>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full border border-[rgba(255,255,255,0.09)] bg-black/60 text-[#8f8f8f]">
+                      {modeLabel}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-[#8f8f8f] mt-1.5">
+                    <span className="font-num">{allies.length} 人</span>
+                    <span className="font-num uppercase text-[#5c5c5c]">
+                      REGION: {effectiveRegion}
+                    </span>
+                  </div>
+                </div>
+
+                <span className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-0.5 rounded-full border border-white/25 bg-white/[0.07] text-[#ededed]">
+                  <Radio className="w-3 h-3" />
+                  ロビー待機中
+                </span>
+              </div>
+            </div>
+          ) : (
+          /* Active Match Banner */
           <div className="vt-panel relative overflow-hidden p-6">
             {mapAsset?.splash && (
               <div className="absolute inset-0 pointer-events-none opacity-[0.14]">
@@ -823,6 +873,7 @@ export function LiveMatchView({
               </div>
             </div>
           </div>
+          )}
 
           {/* Pregame: enemy picks */}
           {status === "PREGAME" && enemies.length > 0 && (
@@ -883,10 +934,10 @@ export function LiveMatchView({
             </section>
           )}
 
-          {/* Ally Team */}
+          {/* Ally Team / Party lobby */}
           {allies.length > 0 && (
             <LiveTeamTable
-              title="味方チーム"
+              title={isLobby ? "パーティ（ロビー）" : "味方チーム"}
               isAllyTable={true}
               players={allies}
               ranksByPuuid={viewRanks}
@@ -898,7 +949,7 @@ export function LiveMatchView({
           )}
 
           {/* Enemy Team */}
-          {enemies.length > 0 && (
+          {!isLobby && enemies.length > 0 && (
             <LiveTeamTable
               title="相手チーム"
               isAllyTable={false}

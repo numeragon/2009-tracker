@@ -33,6 +33,9 @@ pub struct LiveMatchPlayerRaw {
     pub is_incognito: bool,
     pub card_id: String,
     pub pregame_tier: i64,
+    /// Party lobby only: ready check state / party owner.
+    pub party_ready: Option<bool>,
+    pub is_party_owner: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -290,6 +293,164 @@ async fn resolve_names(
     map
 }
 
+#[derive(Debug, Deserialize)]
+struct PartyPlayerResp {
+    #[serde(rename = "CurrentPartyID")]
+    current_party_id: Option<String>,
+}
+
+struct PartySnapshot {
+    players: Vec<LiveMatchPlayerRaw>,
+    queue_id: Option<String>,
+    mode_id: Option<String>,
+    map_url: Option<String>,
+}
+
+fn is_zero_guid(value: &str) -> bool {
+    value.is_empty() || value.chars().all(|c| c == '0' || c == '-')
+}
+
+/// Reads the current party (client lobby) roster. The player stays "IN_MENU"
+/// while waiting, but we can still list everyone who is in the lobby.
+async fn fetch_party_snapshot(
+    remote_client: &reqwest::Client,
+    shard: &str,
+    glz_region: &str,
+    headers: &HeaderMap,
+    self_puuid: &str,
+) -> PartySnapshot {
+    let empty = PartySnapshot {
+        players: Vec::new(),
+        queue_id: None,
+        mode_id: None,
+        map_url: None,
+    };
+
+    let glz_base = format!("https://glz-{glz_region}-1.{shard}.a.pvp.net");
+    let player_url = format!("{glz_base}/parties/v1/players/{self_puuid}");
+    let party_id = match remote_client
+        .get(&player_url)
+        .headers(headers.clone())
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<PartyPlayerResp>().await {
+            Ok(p) => p.current_party_id.unwrap_or_default(),
+            Err(_) => String::new(),
+        },
+        _ => String::new(),
+    };
+
+    if is_zero_guid(&party_id) {
+        return empty;
+    }
+
+    let party_url = format!("{glz_base}/parties/v1/parties/{party_id}");
+    let party = match remote_client
+        .get(&party_url)
+        .headers(headers.clone())
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+            Ok(v) => v,
+            Err(_) => return empty,
+        },
+        _ => return empty,
+    };
+
+    let members = party
+        .get("Members")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let puuids: Vec<String> = members
+        .iter()
+        .filter_map(|p| p.get("Subject").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    let name_map = resolve_names(remote_client, shard, headers, &puuids).await;
+
+    let self_lower = self_puuid.to_lowercase();
+    let mut players = Vec::new();
+    for p in &members {
+        let puuid = p.get("Subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if puuid.is_empty() {
+            continue;
+        }
+
+        let identity = p.get("PlayerIdentity");
+        let account_level = identity
+            .and_then(|id| id.get("AccountLevel"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let hide_account_level = identity
+            .and_then(|id| id.get("HideAccountLevel"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let is_incognito = identity
+            .and_then(|id| id.get("Incognito"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let card_id = identity
+            .and_then(|id| id.get("PlayerCardID"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        let (game_name, tag_line) = name_map
+            .get(&puuid.to_lowercase())
+            .cloned()
+            .unwrap_or_else(|| ("Player".to_string(), "".to_string()));
+
+        players.push(LiveMatchPlayerRaw {
+            puuid: puuid.clone(),
+            game_name,
+            tag_line,
+            team_id: "party".to_string(),
+            is_ally: true,
+            is_self: puuid.eq_ignore_ascii_case(&self_lower),
+            agent_id: String::new(),
+            selection_state: String::new(),
+            account_level,
+            hide_account_level,
+            is_incognito,
+            card_id,
+            pregame_tier: p
+                .get("CompetitiveTier")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
+            party_ready: p.get("IsReady").and_then(|v| v.as_bool()),
+            is_party_owner: p.get("IsOwner").and_then(|v| v.as_bool()),
+        });
+    }
+
+    let queue_id = party
+        .get("MatchmakingData")
+        .and_then(|v| v.get("QueueID"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let custom = party.get("CustomGameData").and_then(|v| v.get("Settings"));
+    let mode_id = custom
+        .and_then(|v| v.get("Mode"))
+        .and_then(|v| v.as_str())
+        .filter(|v| !is_zero_guid(v))
+        .map(String::from);
+    let map_url = custom
+        .and_then(|v| v.get("Map"))
+        .and_then(|v| v.as_str())
+        .filter(|v| !is_zero_guid(v))
+        .map(String::from);
+
+    PartySnapshot {
+        players,
+        queue_id,
+        mode_id,
+        map_url,
+    }
+}
+
 #[tauri::command]
 pub async fn fetch_live_match(region_fallback: String) -> Result<LiveMatchResponse, String> {
     let Some(lock) = read_lockfile() else {
@@ -466,19 +627,35 @@ pub async fn fetch_live_match(region_fallback: String) -> Result<LiveMatchRespon
         }
     }
 
+    // 3. Not in a match: read the party lobby roster so the client lobby is
+    // still useful (who is in the party, ranks, ready state).
+    let party = fetch_party_snapshot(
+        &remote_client,
+        &shard,
+        &glz_region,
+        &riot_headers,
+        &self_puuid,
+    )
+    .await;
+
     Ok(LiveMatchResponse {
         status: "IN_MENU".to_string(),
-        message: Some("VALORANT 起動中（現在マッチには入っていません）。エージェント選択または試合が始まると表示されます。".to_string()),
+        message: Some(if party.players.is_empty() {
+            "VALORANT 起動中（現在マッチには入っていません）。エージェント選択または試合が始まると表示されます。"
+                .to_string()
+        } else {
+            "ロビー待機中。パーティメンバーを表示しています。".to_string()
+        }),
         match_id: None,
-        map_url: None,
-        mode_id: None,
-        queue_id: None,
+        map_url: party.map_url,
+        mode_id: party.mode_id,
+        queue_id: party.queue_id,
         server_pod: None,
         detected_region: Some(glz_region),
         detected_shard: Some(shard),
         self_puuid: Some(self_puuid),
         ally_side: None,
-        players: Vec::new(),
+        players: party.players,
     })
 }
 
@@ -583,6 +760,8 @@ async fn build_core_game_response(
             is_incognito,
             card_id,
             pregame_tier: 0,
+            party_ready: None,
+            is_party_owner: None,
         });
     }
 
@@ -746,6 +925,8 @@ async fn build_pregame_response(
                 .get("CompetitiveTier")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0),
+            party_ready: None,
+            is_party_owner: None,
         });
     }
 

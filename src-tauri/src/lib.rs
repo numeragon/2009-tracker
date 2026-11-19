@@ -1,6 +1,7 @@
 mod live_match;
 mod local_api;
 mod replay;
+mod riot_auth;
 
 use tauri::Manager;
 
@@ -53,6 +54,9 @@ pub fn run() {
             live_match::fetch_live_match,
             local_api::fetch_crosshair_settings,
             local_api::fetch_storefront,
+            riot_auth::riot_login,
+            riot_auth::riot_last_session,
+            riot_auth::riot_logout,
             replay::host::replay_get_state,
             replay::host::replay_update_config,
             replay::host::replay_toggle_recording,

@@ -30,6 +30,7 @@ export function formatLiveModeLabel(modeId?: string | null, queueId?: string | n
   if (combined.includes("hurm")) return "チームデスマッチ";
   if (combined.includes("ggteam") || combined.includes("escalation")) return "エスカレーション";
   if (combined.includes("premier")) return "プレミア";
+  if (combined.includes("custom")) return "カスタム";
   if (combined.includes("unrated") || combined.includes("bomb")) return "アンレート / スタンダード";
   return queueId || "カスタム / その他";
 }

@@ -9,6 +9,7 @@ use crate::live_match::{
     CLIENT_PLATFORM_B64, fallback_glz_and_shard, read_lockfile, resolve_client_version,
     scan_shooter_game_log,
 };
+use crate::riot_auth::RiotSessionInput;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,6 +35,10 @@ pub struct StorefrontFetchResponse {
     pub storefront: Option<Value>,
     pub wallet: Option<Value>,
     pub fetched_at: u64,
+    /// "session" (Riot account login) or "client" (local Riot Client).
+    pub auth_source: Option<String>,
+    /// True when the saved Riot session expired and the user must log in again.
+    pub auth_expired: bool,
 }
 
 struct RiotTokens {
@@ -185,61 +190,116 @@ async fn fetch_riot_tokens(
     })
 }
 
-#[tauri::command]
-pub async fn fetch_storefront(region_fallback: String) -> Result<StorefrontFetchResponse, String> {
-    let Some(lock) = read_lockfile() else {
-        return Ok(StorefrontFetchResponse {
-            ok: false,
-            message: Some(
-                "VALORANT（Riot Client）が起動していません。ゲームを起動してから再取得してください。"
-                    .to_string(),
-            ),
-            puuid: None,
-            shard: None,
-            region: None,
-            storefront: None,
-            wallet: None,
-            fetched_at: now_millis(),
-        });
-    };
+fn storefront_error(
+    message: impl Into<String>,
+    puuid: Option<String>,
+    shard: Option<String>,
+    region: Option<String>,
+    auth_source: Option<&str>,
+    auth_expired: bool,
+) -> StorefrontFetchResponse {
+    StorefrontFetchResponse {
+        ok: false,
+        message: Some(message.into()),
+        puuid,
+        shard,
+        region,
+        storefront: None,
+        wallet: None,
+        fetched_at: now_millis(),
+        auth_source: auth_source.map(String::from),
+        auth_expired,
+    }
+}
 
-    let local_client = reqwest::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .timeout(Duration::from_secs(6))
-        .build()
-        .map_err(|e| format!("ローカルHTTPクライアント初期化エラー: {e}"))?;
+#[tauri::command]
+pub async fn fetch_storefront(
+    region_fallback: String,
+    session: Option<RiotSessionInput>,
+) -> Result<StorefrontFetchResponse, String> {
     let remote_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(12))
         .build()
         .map_err(|e| format!("HTTPクライアント初期化エラー: {e}"))?;
 
-    let tokens = match fetch_riot_tokens(&local_client, &lock.port, &lock.password).await {
-        Ok(t) => t,
-        Err(message) => {
-            return Ok(StorefrontFetchResponse {
-                ok: false,
-                message: Some(message),
-                puuid: None,
-                shard: None,
-                region: None,
-                storefront: None,
-                wallet: None,
-                fetched_at: now_millis(),
-            });
-        }
-    };
+    // A Riot account session lets the store work with the game closed. When no
+    // session is available we keep the old local-client fallback.
+    let session = session.filter(|s| !s.access_token.is_empty() && !s.puuid.is_empty());
 
-    let log_info = scan_shooter_game_log();
-    let (fb_glz, fb_shard) = fallback_glz_and_shard(&region_fallback);
-    let glz_region = log_info.glz_region.clone().unwrap_or(fb_glz);
-    let shard = log_info.shard.clone().unwrap_or(fb_shard);
-    let client_version = resolve_client_version(&remote_client, log_info.client_version).await;
+    let (access_token, entitlement, puuid, region_hint, log_info, auth_source) =
+        if let Some(s) = session {
+            let hint = s
+                .region
+                .clone()
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or_else(|| region_fallback.clone());
+            (s.access_token, s.entitlements, s.puuid, hint, None, "session")
+        } else {
+            let Some(lock) = read_lockfile() else {
+                return Ok(storefront_error(
+                    "Riotアカウントにログインすると、ゲームを起動していなくてもストアを確認できます。",
+                    None,
+                    None,
+                    None,
+                    None,
+                    false,
+                ));
+            };
+
+            let local_client = reqwest::Client::builder()
+                .danger_accept_invalid_certs(true)
+                .timeout(Duration::from_secs(6))
+                .build()
+                .map_err(|e| format!("ローカルHTTPクライアント初期化エラー: {e}"))?;
+
+            let tokens =
+                match fetch_riot_tokens(&local_client, &lock.port, &lock.password).await {
+                    Ok(t) => t,
+                    Err(message) => {
+                        return Ok(storefront_error(
+                            message, None, None, None, None, false,
+                        ));
+                    }
+                };
+
+            (
+                tokens.access_token,
+                tokens.entitlement,
+                tokens.subject,
+                region_fallback.clone(),
+                Some(scan_shooter_game_log()),
+                "client",
+            )
+        };
+
+    let (fb_glz, fb_shard) = fallback_glz_and_shard(&region_hint);
+    let glz_region = log_info
+        .as_ref()
+        .and_then(|l| l.glz_region.clone())
+        .unwrap_or(fb_glz);
+    let shard = log_info
+        .as_ref()
+        .and_then(|l| l.shard.clone())
+        .unwrap_or(fb_shard);
+    let client_version =
+        resolve_client_version(&remote_client, log_info.and_then(|l| l.client_version)).await;
+
+    if puuid.is_empty() {
+        return Ok(storefront_error(
+            "プレイヤー情報（PUUID）を取得できませんでした。",
+            None,
+            Some(shard),
+            Some(glz_region),
+            Some(auth_source),
+            auth_source == "session",
+        ));
+    }
 
     let mut headers = HeaderMap::new();
-    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", tokens.access_token)) {
+    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {access_token}")) {
         headers.insert(AUTHORIZATION, v);
     }
-    if let Ok(v) = HeaderValue::from_str(&tokens.entitlement) {
+    if let Ok(v) = HeaderValue::from_str(&entitlement) {
         headers.insert("X-Riot-Entitlements-JWT", v);
     }
     if let Ok(v) = HeaderValue::from_str(&client_version) {
@@ -250,57 +310,43 @@ pub async fn fetch_storefront(region_fallback: String) -> Result<StorefrontFetch
         HeaderValue::from_static(CLIENT_PLATFORM_B64),
     );
 
-    let puuid = tokens.subject.clone();
-    if puuid.is_empty() {
-        return Ok(StorefrontFetchResponse {
-            ok: false,
-            message: Some("プレイヤー情報（PUUID）を取得できませんでした。".to_string()),
-            puuid: None,
-            shard: Some(shard),
-            region: Some(glz_region),
-            storefront: None,
-            wallet: None,
-            fetched_at: now_millis(),
-        });
-    }
-
-    let store_url = format!(
-        "https://pd.{shard}.a.pvp.net/store/v2/storefront/{puuid}"
-    );
-    let store_resp = remote_client
+    let store_url = format!("https://pd.{shard}.a.pvp.net/store/v2/storefront/{puuid}");
+    let storefront = match remote_client
         .get(&store_url)
         .headers(headers.clone())
         .send()
-        .await;
-
-    let storefront = match store_resp {
+        .await
+    {
         Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
         Ok(r) => {
-            return Ok(StorefrontFetchResponse {
-                ok: false,
-                message: Some(format!(
+            let expired =
+                auth_source == "session" && r.status() == reqwest::StatusCode::UNAUTHORIZED;
+            let message = if expired {
+                "Riotセッションの有効期限が切れました。再ログインしてください。".to_string()
+            } else {
+                format!(
                     "ストア情報の取得に失敗しました (HTTP {})。",
                     r.status().as_u16()
-                )),
-                puuid: Some(puuid),
-                shard: Some(shard),
-                region: Some(glz_region),
-                storefront: None,
-                wallet: None,
-                fetched_at: now_millis(),
-            });
+                )
+            };
+            return Ok(storefront_error(
+                message,
+                Some(puuid),
+                Some(shard),
+                Some(glz_region),
+                Some(auth_source),
+                expired,
+            ));
         }
         Err(e) => {
-            return Ok(StorefrontFetchResponse {
-                ok: false,
-                message: Some(format!("ストア情報の取得に失敗しました: {e}")),
-                puuid: Some(puuid),
-                shard: Some(shard),
-                region: Some(glz_region),
-                storefront: None,
-                wallet: None,
-                fetched_at: now_millis(),
-            });
+            return Ok(storefront_error(
+                format!("ストア情報の取得に失敗しました: {e}"),
+                Some(puuid),
+                Some(shard),
+                Some(glz_region),
+                Some(auth_source),
+                false,
+            ));
         }
     };
 
@@ -328,5 +374,7 @@ pub async fn fetch_storefront(region_fallback: String) -> Result<StorefrontFetch
         storefront,
         wallet,
         fetched_at: now_millis(),
+        auth_source: Some(auth_source.to_string()),
+        auth_expired: false,
     })
 }
