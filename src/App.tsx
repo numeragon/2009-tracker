@@ -44,6 +44,8 @@ import { RrHistoryChart } from "./components/RrHistoryChart";
 import { MatchHistoryTab } from "./components/MatchHistoryTab";
 import { MatchDetailView } from "./components/MatchDetailView";
 import { LiveMatchView } from "./components/LiveMatchView";
+import { CrosshairView } from "./components/CrosshairView";
+import { StoreView } from "./components/StoreView";
 import { RecorderView } from "./components/RecorderView";
 import { ClipStudioView } from "./components/ClipStudioView";
 import { WaveDotBackground, type WavePreset } from "./components/WaveDotBackground";
@@ -455,6 +457,10 @@ export default function App() {
               }}
             />
           )}
+
+          {route === "crosshair" && <CrosshairView />}
+
+          {route === "store" && <StoreView defaultRegion={searchRegion} />}
 
           {route === "recorder" && (
             <RecorderView onOpenClipStudio={() => setRoute("clips")} />

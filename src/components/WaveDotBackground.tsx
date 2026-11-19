@@ -9,6 +9,8 @@ export type WavePreset =
   | "matches"
   | "agents"
   | "maps"
+  | "crosshair"
+  | "store"
   | "match-detail"
   | "leaderboard"
   | "settings";
@@ -113,6 +115,28 @@ const PRESETS: Record<WavePreset, PresetConfig> = {
     speed: 0.74,
     radialPulse: 0.0,
     tint: [234, 234, 234],
+  },
+  crosshair: {
+    pitch: 0.54,
+    yaw: 0.12,
+    amp1: 20,
+    amp2: 15,
+    freqX: 0.1,
+    freqZ: 0.1,
+    speed: 0.9,
+    radialPulse: 8.0,
+    tint: [240, 240, 240],
+  },
+  store: {
+    pitch: 0.6,
+    yaw: -0.12,
+    amp1: 23,
+    amp2: 16,
+    freqX: 0.09,
+    freqZ: 0.11,
+    speed: 1.0,
+    radialPulse: 0.0,
+    tint: [234, 234, 236],
   },
   "match-detail": {
     pitch: 0.64,

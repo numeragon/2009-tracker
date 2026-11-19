@@ -437,6 +437,7 @@ export interface LiveMatchResponse {
   detectedRegion: string | null;
   detectedShard: string | null;
   selfPuuid: string | null;
+  allySide?: "attack" | "defense" | null;
   players: LiveMatchPlayerRaw[];
 }
 
@@ -540,4 +541,81 @@ export interface ValorantAssetsCatalog {
   mapsByKey: Record<string, MapAsset>;
   tiersById: Record<number, TierAsset>;
   weaponsById: Record<string, WeaponAsset>;
+}
+
+/* ---------- Local client: crosshair ---------- */
+
+export interface CrosshairFetchResponse {
+  ok: boolean;
+  message: string | null;
+  profileData: string | null;
+  profileName: string | null;
+  crosshairColor: string | null;
+}
+
+/* ---------- Local client: storefront ---------- */
+
+export interface StorefrontFetchResponse {
+  ok: boolean;
+  message: string | null;
+  puuid: string | null;
+  shard: string | null;
+  region: string | null;
+  storefront: unknown;
+  wallet: unknown;
+  fetchedAt: number;
+}
+
+export interface StoreItemRef {
+  /** Weapon skin level UUID used by the storefront response. */
+  itemId: string;
+  price: number;
+}
+
+export interface NightMarketOffer extends StoreItemRef {
+  originalPrice: number;
+  discountedPrice: number;
+  discountPercent: number;
+}
+
+export interface FeaturedBundleItem extends StoreItemRef {
+  discountedPrice: number;
+  discountPercent: number;
+}
+
+export interface StorefrontViewData {
+  daily: StoreItemRef[];
+  dailyRemainingSeconds: number;
+  nightMarket: {
+    offers: NightMarketOffer[];
+    remainingSeconds: number;
+  } | null;
+  bundle: {
+    dataAssetId: string;
+    remainingSeconds: number;
+    discountPercent: number;
+    totalPrice: number;
+    items: FeaturedBundleItem[];
+  } | null;
+  vp: number | null;
+  rp: number | null;
+}
+
+export interface StoreSkinAsset {
+  uuid: string;
+  name: string;
+  icon: string;
+  weaponName: string;
+}
+
+export interface StoreBundleAsset {
+  uuid: string;
+  name: string;
+  icon: string;
+}
+
+export interface StoreCatalog {
+  skinsByLevelId: Record<string, StoreSkinAsset>;
+  skinsById: Record<string, StoreSkinAsset>;
+  bundlesById: Record<string, StoreBundleAsset>;
 }

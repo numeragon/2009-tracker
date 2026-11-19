@@ -160,8 +160,8 @@ function LiveTeamTable({
                   ? resolveTierAsset(assets, rank.peakTierId)
                   : undefined;
 
-              const maskedIdentity = p.isIncognito && !p.isSelf;
-              const canClickProfile = !maskedIdentity && Boolean(p.gameName && p.tagLine);
+              const isMasked = p.isIncognito && !p.isSelf;
+              const canClickProfile = Boolean(p.gameName && p.tagLine);
 
               return (
                 <tr
@@ -198,6 +198,7 @@ function LiveTeamTable({
                               type="button"
                               onClick={() => onSelectPlayer(p.gameName, p.tagLine)}
                               className="font-medium text-[#ededed] hover:underline truncate cursor-pointer text-left"
+                              title={isMasked ? "匿名設定のプレイヤー（名前を解決）" : undefined}
                             >
                               {p.gameName}
                               <span className="font-num text-[#8f8f8f] font-normal ml-0.5">
@@ -206,9 +207,16 @@ function LiveTeamTable({
                             </button>
                           ) : (
                             <span className="text-[#8f8f8f] truncate">
-                              {maskedIdentity
-                                ? "匿名プレイヤー（非公開設定）"
-                                : p.gameName || "Player"}
+                              {p.gameName || "Player"}
+                            </span>
+                          )}
+
+                          {isMasked && (
+                            <span
+                              title="ゲーム内では匿名設定ですが、クライアントAPIから名前を解決しています"
+                              className="text-[9px] px-1 py-0.2 rounded border border-[rgba(255,255,255,0.16)] text-[#8f8f8f] shrink-0"
+                            >
+                              匿名
                             </span>
                           )}
 
@@ -223,7 +231,11 @@ function LiveTeamTable({
                           <span>{agent?.displayName || "エージェント未確定"}</span>
                           {isPregame && (
                             <span className="text-[10px] text-[#8f8f8f]">
-                              ({p.selectionState === "locked" ? "確定" : "選択中"})
+                              ({p.selectionState === "locked"
+                                ? "確定"
+                                : p.agentId
+                                  ? "選択中"
+                                  : "未選択"})
                             </span>
                           )}
                         </div>
@@ -784,6 +796,17 @@ export function LiveMatchView({
                   <span className="text-xs px-2.5 py-0.5 rounded-full border border-[rgba(255,255,255,0.09)] bg-black/60 text-[#8f8f8f]">
                     {modeLabel}
                   </span>
+                  {status === "PREGAME" && viewData?.allySide && (
+                    <span
+                      className={`text-xs px-2.5 py-0.5 rounded-full border font-medium ${
+                        viewData.allySide === "attack"
+                          ? "border-[var(--semantic-loss-border)] bg-[var(--semantic-loss-bg)] text-[var(--semantic-loss)]"
+                          : "border-[var(--semantic-win-border)] bg-[var(--semantic-win-bg)] text-[var(--semantic-win)]"
+                      }`}
+                    >
+                      前半: {viewData.allySide === "attack" ? "攻撃" : "防御"}
+                    </span>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-3 text-xs text-[#8f8f8f] mt-1.5">
@@ -800,6 +823,65 @@ export function LiveMatchView({
               </div>
             </div>
           </div>
+
+          {/* Pregame: enemy picks */}
+          {status === "PREGAME" && enemies.length > 0 && (
+            <section className="vt-panel overflow-hidden">
+              <div className="px-5 py-3.5 flex items-center justify-between vt-hairline-b bg-[#0a0a0a]">
+                <div className="flex items-center gap-2.5">
+                  <h2 className="text-xs font-medium text-[#ededed]">相手のピック</h2>
+                  <span className="text-[10px] text-[#5c5c5c]">エージェント選択中</span>
+                </div>
+                <span className="font-num text-[10px] uppercase text-[#5c5c5c]">
+                  {enemies.filter((p) => p.agentId).length} / {enemies.length} picked
+                </span>
+              </div>
+
+              <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                {enemies.map((p) => {
+                  const agent = p.agentId
+                    ? resolveAgentAsset(assets, p.agentId, null)
+                    : undefined;
+                  const stateLabel =
+                    p.selectionState === "locked"
+                      ? "確定"
+                      : p.agentId
+                        ? "選択中"
+                        : "未選択";
+                  return (
+                    <div
+                      key={p.puuid}
+                      className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-black px-3 py-2.5 flex items-center gap-2.5 min-w-0"
+                    >
+                      {agent?.displayIcon ? (
+                        <img
+                          src={agent.displayIcon}
+                          alt={agent.displayName}
+                          className={`w-9 h-9 rounded-[8px] object-cover border border-[rgba(255,255,255,0.09)] bg-black shrink-0 ${
+                            p.selectionState !== "locked" ? "opacity-55" : ""
+                          }`}
+                        />
+                      ) : (
+                        <div className="w-9 h-9 rounded-[8px] border border-dashed border-[rgba(255,255,255,0.14)] flex items-center justify-center text-[10px] text-[#5c5c5c] shrink-0">
+                          ?
+                        </div>
+                      )}
+                      <div className="min-w-0">
+                        <div className="text-[11px] text-[#ededed] truncate">
+                          {agent?.displayName || "未選択"}
+                        </div>
+                        <div className="text-[10px] text-[#5c5c5c] truncate">
+                          {p.gameName}
+                          <span className="font-num">#{p.tagLine}</span>
+                        </div>
+                        <div className="text-[9px] mt-0.5 text-[#8f8f8f]">{stateLabel}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
 
           {/* Ally Team */}
           {allies.length > 0 && (

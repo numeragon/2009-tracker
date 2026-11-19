@@ -1,4 +1,5 @@
 mod live_match;
+mod local_api;
 mod replay;
 
 use tauri::Manager;
@@ -50,6 +51,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             window_close_or_tray,
             live_match::fetch_live_match,
+            local_api::fetch_crosshair_settings,
+            local_api::fetch_storefront,
             replay::host::replay_get_state,
             replay::host::replay_update_config,
             replay::host::replay_toggle_recording,

@@ -3,7 +3,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
@@ -13,7 +13,7 @@ use std::time::Duration;
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::OpenOptionsExt;
 
-const CLIENT_PLATFORM_B64: &str = "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9";
+pub(crate) const CLIENT_PLATFORM_B64: &str = "ew0KCSJwbGF0Zm9ybVR5cGUiOiAiUEMiLA0KCSJwbGF0Zm9ybU9TIjogIldpbmRvd3MiLA0KCSJwbGF0Zm9ybU9TVmVyc2lvbiI6ICIxMC4wLjE5MDQyLjEuMjU2LjY0Yml0IiwNCgkicGxhdGZvcm1DaGlwc2V0IjogIlVua25vd24iDQp9";
 
 static CACHED_CLIENT_VERSION: OnceLock<tokio::sync::Mutex<Option<String>>> = OnceLock::new();
 
@@ -49,6 +49,8 @@ pub struct LiveMatchResponse {
     pub detected_region: Option<String>,
     pub detected_shard: Option<String>,
     pub self_puuid: Option<String>,
+    /// "attack" | "defense" (agent select only; None when unknown)
+    pub ally_side: Option<String>,
     pub players: Vec<LiveMatchPlayerRaw>,
 }
 
@@ -91,12 +93,12 @@ fn get_local_app_data() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
 }
 
-struct LockfileInfo {
-    port: String,
-    password: String,
+pub(crate) struct LockfileInfo {
+    pub(crate) port: String,
+    pub(crate) password: String,
 }
 
-fn read_lockfile() -> Option<LockfileInfo> {
+pub(crate) fn read_lockfile() -> Option<LockfileInfo> {
     let base = get_local_app_data()?;
     let path = base
         .join("Riot Games")
@@ -116,13 +118,13 @@ fn read_lockfile() -> Option<LockfileInfo> {
     })
 }
 
-struct LogDiscovery {
-    glz_region: Option<String>,
-    shard: Option<String>,
-    client_version: Option<String>,
+pub(crate) struct LogDiscovery {
+    pub(crate) glz_region: Option<String>,
+    pub(crate) shard: Option<String>,
+    pub(crate) client_version: Option<String>,
 }
 
-fn scan_shooter_game_log() -> LogDiscovery {
+pub(crate) fn scan_shooter_game_log() -> LogDiscovery {
     let mut out = LogDiscovery {
         glz_region: None,
         shard: None,
@@ -189,7 +191,7 @@ fn scan_shooter_game_log() -> LogDiscovery {
     out
 }
 
-async fn resolve_client_version(remote_client: &reqwest::Client, log_ver: Option<String>) -> String {
+pub(crate) async fn resolve_client_version(remote_client: &reqwest::Client, log_ver: Option<String>) -> String {
     let lock = CACHED_CLIENT_VERSION.get_or_init(|| tokio::sync::Mutex::new(None));
     {
         let guard = lock.lock().await;
@@ -220,7 +222,7 @@ async fn resolve_client_version(remote_client: &reqwest::Client, log_ver: Option
     log_ver.unwrap_or_else(|| "release-10.00-shipping-10-3000000".to_string())
 }
 
-fn fallback_glz_and_shard(region: &str) -> (String, String) {
+pub(crate) fn fallback_glz_and_shard(region: &str) -> (String, String) {
     match region.trim().to_lowercase().as_str() {
         "eu" => ("eu".to_string(), "eu".to_string()),
         "na" => ("na".to_string(), "na".to_string()),
@@ -302,6 +304,7 @@ pub async fn fetch_live_match(region_fallback: String) -> Result<LiveMatchRespon
             detected_region: None,
             detected_shard: None,
             self_puuid: None,
+            ally_side: None,
             players: Vec::new(),
         });
     };
@@ -340,6 +343,7 @@ pub async fn fetch_live_match(region_fallback: String) -> Result<LiveMatchRespon
                     detected_region: None,
                     detected_shard: None,
                     self_puuid: None,
+                    ally_side: None,
                     players: Vec::new(),
                 });
             }
@@ -356,6 +360,7 @@ pub async fn fetch_live_match(region_fallback: String) -> Result<LiveMatchRespon
                 detected_region: None,
                 detected_shard: None,
                 self_puuid: None,
+                ally_side: None,
                 players: Vec::new(),
             });
         }
@@ -472,6 +477,7 @@ pub async fn fetch_live_match(region_fallback: String) -> Result<LiveMatchRespon
         detected_region: Some(glz_region),
         detected_shard: Some(shard),
         self_puuid: Some(self_puuid),
+        ally_side: None,
         players: Vec::new(),
     })
 }
@@ -591,6 +597,7 @@ async fn build_core_game_response(
         detected_region: Some(glz_region.to_string()),
         detected_shard: Some(shard.to_string()),
         self_puuid: Some(self_puuid.to_string()),
+        ally_side: None,
         players,
     }
 }
@@ -616,26 +623,40 @@ async fn build_pregame_response(
 
     let self_lower = self_puuid.to_lowercase();
 
-    // Collect teams from Teams array or AllyTeam fallback
+    // Collect players from the Teams array, then fill in anything that only
+    // shows up under AllyTeam / EnemyTeam (some pregame payloads omit the
+    // enemy team from `Teams`).
     let mut team_entries: Vec<(String, Value)> = Vec::new();
-    if let Some(teams) = mjson.get("Teams").and_then(|v| v.as_array()) {
-        for t in teams {
-            let tid = t.get("TeamID").and_then(|v| v.as_str()).unwrap_or("Blue").to_string();
-            if let Some(plist) = t.get("Players").and_then(|v| v.as_array()) {
-                for p in plist {
-                    team_entries.push((tid.clone(), p.clone()));
+    let mut seen_puuids: HashSet<String> = HashSet::new();
+    let mut push_team = |tid: &str, team: &Value| {
+        if let Some(plist) = team.get("Players").and_then(|v| v.as_array()) {
+            for p in plist {
+                let sub = p
+                    .get("Subject")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                if !sub.is_empty() && !seen_puuids.insert(sub) {
+                    continue;
                 }
+                team_entries.push((tid.to_string(), p.clone()));
             }
         }
+    };
+
+    if let Some(teams) = mjson.get("Teams").and_then(|v| v.as_array()) {
+        for t in teams {
+            let tid = t.get("TeamID").and_then(|v| v.as_str()).unwrap_or("Blue");
+            push_team(tid, t);
+        }
     }
-    if team_entries.is_empty() {
-        if let Some(ally) = mjson.get("AllyTeam") {
-            let tid = ally.get("TeamID").and_then(|v| v.as_str()).unwrap_or("Blue").to_string();
-            if let Some(plist) = ally.get("Players").and_then(|v| v.as_array()) {
-                for p in plist {
-                    team_entries.push((tid.clone(), p.clone()));
-                }
-            }
+    for key in ["AllyTeam", "EnemyTeam"] {
+        if let Some(team) = mjson.get(key) {
+            let tid = team
+                .get("TeamID")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Blue");
+            push_team(tid, team);
         }
     }
 
@@ -728,6 +749,14 @@ async fn build_pregame_response(
         });
     }
 
+    let ally_side = if self_team.eq_ignore_ascii_case("Red") {
+        Some("attack".to_string())
+    } else if self_team.eq_ignore_ascii_case("Blue") {
+        Some("defense".to_string())
+    } else {
+        None
+    };
+
     LiveMatchResponse {
         status: "PREGAME".to_string(),
         message: None,
@@ -739,6 +768,7 @@ async fn build_pregame_response(
         detected_region: Some(glz_region.to_string()),
         detected_shard: Some(shard.to_string()),
         self_puuid: Some(self_puuid.to_string()),
+        ally_side,
         players,
     }
 }
