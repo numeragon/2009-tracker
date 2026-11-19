@@ -18,7 +18,12 @@ import {
   parseGameProfile,
   saveCrosshairEntry,
 } from "../lib/crosshair";
-import { fetchCrosshairFromClient, isTauriRuntime } from "../lib/localClientApi";
+import {
+  fetchCrosshairFromClient,
+  isTauriRuntime,
+  loadRiotSession,
+} from "../lib/localClientApi";
+import type { Region } from "../types/valorant";
 import { CrosshairPreview } from "./CrosshairPreview";
 
 type RemoteState =
@@ -54,7 +59,7 @@ function formatSavedAt(ts: number): string {
   ).padStart(2, "0")}`;
 }
 
-export function CrosshairView() {
+export function CrosshairView({ defaultRegion }: { defaultRegion: Region }) {
   const [remote, setRemote] = useState<RemoteState>({ status: "loading" });
   const [currentName, setCurrentName] = useState("");
   const [saved, setSaved] = useState<SavedCrosshair[]>(() => loadSavedCrosshairs());
@@ -68,7 +73,7 @@ export function CrosshairView() {
   const refresh = useCallback(async () => {
     setRemote({ status: "loading" });
     try {
-      const result = await fetchCrosshairFromClient();
+      const result = await fetchCrosshairFromClient(defaultRegion, loadRiotSession());
       if (!result.ok || !result.profileData) {
         setRemote({
           status: "error",
@@ -103,7 +108,7 @@ export function CrosshairView() {
             : "クロスヘア設定の取得に失敗しました。",
       });
     }
-  }, []);
+  }, [defaultRegion]);
 
   useEffect(() => {
     void refresh();
@@ -179,7 +184,7 @@ export function CrosshairView() {
             </h1>
           </div>
           <p className="text-xs text-[#8f8f8f] mt-1.5">
-            ゲーム内のクロスヘアを取得して保存・共有コードとしてコピーできます。保存した設定はこのPC内にのみ残ります。
+            ゲーム内のクロスヘアを取得して保存・共有コードとしてコピーできます。ショップでRiotアカウントにログイン済みなら、ゲームを起動していなくても取得できます。保存した設定はこのPC内にのみ残ります。
           </p>
         </div>
 

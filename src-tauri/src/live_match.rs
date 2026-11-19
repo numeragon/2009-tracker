@@ -76,9 +76,11 @@ struct NameServiceEntry {
     #[serde(rename = "Subject")]
     subject: String,
     #[serde(rename = "GameName")]
-    game_name: String,
+    game_name: Option<String>,
     #[serde(rename = "TagLine")]
-    tag_line: String,
+    tag_line: Option<String>,
+    #[serde(rename = "DisplayName", default)]
+    display_name: Option<String>,
 }
 
 fn open_shared_file(path: &PathBuf) -> std::io::Result<std::fs::File> {
@@ -263,6 +265,166 @@ fn format_pod_name(pod_id: &str) -> String {
         .to_string()
 }
 
+fn service_entry_name(entry: &NameServiceEntry) -> Option<(String, String)> {
+    let game = entry.game_name.as_deref().unwrap_or("").trim();
+    let tag = entry.tag_line.as_deref().unwrap_or("").trim();
+    if !game.is_empty() {
+        return Some((game.to_string(), tag.to_string()));
+    }
+
+    // Some responses only fill DisplayName ("Name#TAG").
+    let display = entry.display_name.as_deref().unwrap_or("").trim();
+    if let Some((name, tag)) = display.split_once('#') {
+        if !name.trim().is_empty() {
+            return Some((name.trim().to_string(), tag.trim().to_string()));
+        }
+    }
+    if display.is_empty() {
+        None
+    } else {
+        Some((display.to_string(), String::new()))
+    }
+}
+
+/// Riot replaces hidden (incognito) Riot IDs with generic names such as
+/// "Player 1" or "Player01". Those carry no identity, so treat them as missing.
+fn is_generic_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let compact: String = trimmed.chars().filter(|c| !c.is_whitespace()).collect();
+    let lower = compact.to_lowercase();
+    if let Some(rest) = lower.strip_prefix("player") {
+        return rest.chars().all(|c| c.is_ascii_digit());
+    }
+    if let Some(rest) = lower.strip_prefix("プレイヤー") {
+        return rest
+            .chars()
+            .all(|c| c.is_ascii_digit() || ('０'..='９').contains(&c));
+    }
+    false
+}
+
+/// Some payloads still carry the Riot ID inline (party members, friends) even
+/// when the cloud name service masks it. Read whichever field is present.
+fn identity_name(p: &Value) -> Option<(String, String)> {
+    let identity = p.get("PlayerIdentity");
+    for source in [Some(p), identity] {
+        let Some(source) = source else { continue };
+        let game = source
+            .get("GameName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        let tag = source
+            .get("TagLine")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if !is_generic_name(game) {
+            return Some((game.to_string(), tag.to_string()));
+        }
+
+        let display = source
+            .get("DisplayName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if let Some((name, tag)) = display.split_once('#') {
+            if !is_generic_name(name) {
+                return Some((name.trim().to_string(), tag.trim().to_string()));
+            }
+        }
+    }
+    None
+}
+
+/// Prefer the name-service result, then the identity embedded in the match
+/// payload, so incognito players never end up as a bare "Player".
+fn resolve_player_name(
+    name_map: &HashMap<String, (String, String)>,
+    puuid: &str,
+    p: &Value,
+) -> (String, String) {
+    if let Some(pair) = name_map.get(&puuid.to_lowercase()) {
+        if !is_generic_name(&pair.0) {
+            return pair.clone();
+        }
+    }
+    if let Some(pair) = identity_name(p) {
+        return pair;
+    }
+    ("Player".to_string(), String::new())
+}
+
+/// Reads identities known to the local Riot client (chat participants,
+/// presence and friends). Unlike the cloud name service this is not affected
+/// by the incognito display filter.
+async fn fetch_local_identity_names() -> HashMap<String, (String, String)> {
+    let mut map = HashMap::new();
+    let Some(lock) = read_lockfile() else {
+        return map;
+    };
+    let Ok(client) = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(4))
+        .build()
+    else {
+        return map;
+    };
+
+    let basic = BASE64.encode(format!("riot:{}", lock.password));
+    let endpoints = [
+        ("/chat/v5/participants", "participants"),
+        ("/chat/v4/participants", "participants"),
+        ("/chat/v4/presences", "presences"),
+        ("/chat/v4/friends", "friends"),
+    ];
+
+    for (path, list_key) in endpoints {
+        let url = format!("https://127.0.0.1:{}{}", lock.port, path);
+        let Ok(resp) = client
+            .get(&url)
+            .header(AUTHORIZATION, format!("Basic {basic}"))
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(json) = resp.json::<Value>().await else {
+            continue;
+        };
+        let Some(list) = json.get(list_key).and_then(|v| v.as_array()) else {
+            continue;
+        };
+
+        for entry in list {
+            let puuid = entry.get("puuid").and_then(|v| v.as_str()).unwrap_or("");
+            let game = entry
+                .get("game_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let tag = entry
+                .get("game_tag")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if puuid.is_empty() || is_generic_name(game) {
+                continue;
+            }
+            map.entry(puuid.to_lowercase())
+                .or_insert_with(|| (game.to_string(), tag.to_string()));
+        }
+    }
+
+    map
+}
+
 async fn resolve_names(
     remote_client: &reqwest::Client,
     shard: &str,
@@ -285,11 +447,36 @@ async fn resolve_names(
         if resp.status().is_success() {
             if let Ok(entries) = resp.json::<Vec<NameServiceEntry>>().await {
                 for entry in entries {
-                    map.insert(entry.subject.to_lowercase(), (entry.game_name, entry.tag_line));
+                    if let Some((game_name, tag_line)) = service_entry_name(&entry) {
+                        if !is_generic_name(&game_name) {
+                            map.insert(entry.subject.to_lowercase(), (game_name, tag_line));
+                        }
+                    }
                 }
             }
         }
     }
+
+    // Hidden players come back without a name (or with a generic one). Fill the
+    // gaps from the local client, which still knows the identity behind each
+    // PUUID for chat/presence.
+    let needs_more = puuids
+        .iter()
+        .any(|puuid| !map.contains_key(&puuid.to_lowercase()));
+    if needs_more {
+        for (puuid, (game_name, tag_line)) in fetch_local_identity_names().await {
+            if is_generic_name(&game_name) {
+                continue;
+            }
+            match map.get(&puuid) {
+                Some((existing, _)) if !is_generic_name(existing) => {}
+                _ => {
+                    map.insert(puuid, (game_name, tag_line));
+                }
+            }
+        }
+    }
+
     map
 }
 
@@ -398,10 +585,7 @@ async fn fetch_party_snapshot(
             .unwrap_or("")
             .to_string();
 
-        let (game_name, tag_line) = name_map
-            .get(&puuid.to_lowercase())
-            .cloned()
-            .unwrap_or_else(|| ("Player".to_string(), "".to_string()));
+        let (game_name, tag_line) = resolve_player_name(&name_map, &puuid, p);
 
         players.push(LiveMatchPlayerRaw {
             puuid: puuid.clone(),
@@ -737,10 +921,7 @@ async fn build_core_game_response(
             .unwrap_or("")
             .to_string();
 
-        let (game_name, tag_line) = name_map
-            .get(&puuid.to_lowercase())
-            .cloned()
-            .unwrap_or_else(|| ("Player".to_string(), "".to_string()));
+        let (game_name, tag_line) = resolve_player_name(&name_map, &puuid, p);
 
         players.push(LiveMatchPlayerRaw {
             puuid,
@@ -864,7 +1045,7 @@ async fn build_pregame_response(
     let name_map = resolve_names(remote_client, shard, headers, &puuids).await;
 
     let mut players = Vec::new();
-    for (team_id, p) in team_entries {
+    for (team_id, p) in &team_entries {
         let puuid = p.get("Subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if puuid.is_empty() {
             continue;
@@ -895,16 +1076,13 @@ async fn build_pregame_response(
             .unwrap_or("")
             .to_string();
 
-        let (game_name, tag_line) = name_map
-            .get(&puuid.to_lowercase())
-            .cloned()
-            .unwrap_or_else(|| ("Player".to_string(), "".to_string()));
+        let (game_name, tag_line) = resolve_player_name(&name_map, &puuid, p);
 
         players.push(LiveMatchPlayerRaw {
             puuid,
             game_name,
             tag_line,
-            team_id,
+            team_id: team_id.clone(),
             is_ally,
             is_self,
             agent_id: p

@@ -458,7 +458,7 @@ export default function App() {
             />
           )}
 
-          {route === "crosshair" && <CrosshairView />}
+          {route === "crosshair" && <CrosshairView defaultRegion={searchRegion} />}
 
           {route === "store" && <StoreView defaultRegion={searchRegion} />}
 

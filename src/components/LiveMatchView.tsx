@@ -213,10 +213,14 @@ function LiveTeamTable({
 
                           {isMasked && (
                             <span
-                              title="ゲーム内では匿名設定ですが、クライアントAPIから名前を解決しています"
+                              title={
+                                canClickProfile
+                                  ? "ゲーム内では匿名設定ですが、クライアントAPIから名前を解決しています"
+                                  : "匿名設定のプレイヤーです。名前を解決できませんでした"
+                              }
                               className="text-[9px] px-1 py-0.2 rounded border border-[rgba(255,255,255,0.16)] text-[#8f8f8f] shrink-0"
                             >
-                              匿名
+                              {canClickProfile ? "匿名解除" : "匿名"}
                             </span>
                           )}
 

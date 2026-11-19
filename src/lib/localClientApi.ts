@@ -19,7 +19,10 @@ export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-export async function fetchCrosshairFromClient(): Promise<CrosshairFetchResponse> {
+export async function fetchCrosshairFromClient(
+  region: Region = "ap",
+  session: RiotSession | null = null,
+): Promise<CrosshairFetchResponse> {
   if (!isTauriRuntime()) {
     return {
       ok: false,
@@ -29,7 +32,17 @@ export async function fetchCrosshairFromClient(): Promise<CrosshairFetchResponse
       crosshairColor: null,
     };
   }
-  return invoke<CrosshairFetchResponse>("fetch_crosshair_settings");
+  return invoke<CrosshairFetchResponse>("fetch_crosshair_settings", {
+    regionFallback: region,
+    session: session
+      ? {
+          accessToken: session.accessToken,
+          entitlements: session.entitlements,
+          puuid: session.puuid,
+          region: session.region,
+        }
+      : null,
+  });
 }
 
 export async function fetchStorefrontFromClient(
