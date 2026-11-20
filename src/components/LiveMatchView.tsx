@@ -593,7 +593,6 @@ function PlayerLockerTooltip({
 
 interface LiveMatchViewProps {
   defaultRegion: Region;
-  apiKey: string;
   assets: ValorantAssetsCatalog;
   isActiveTab?: boolean;
   onSelectPlayer: (name: string, tag: string, region: Region) => void;
@@ -601,7 +600,6 @@ interface LiveMatchViewProps {
 
 export function LiveMatchView({
   defaultRegion,
-  apiKey,
   assets,
   isActiveTab = true,
   onSelectPlayer,
@@ -748,7 +746,7 @@ export function LiveMatchView({
             const slice = toFetch.slice(i, i + batchSize);
             const results = await Promise.all(
               slice.map(async (p) => {
-                const info = await fetchPlayerRankByPuuid(p.puuid, effectiveRegion, apiKey);
+                const info = await fetchPlayerRankByPuuid(p.puuid, effectiveRegion);
                 return [p.puuid.toLowerCase(), info ?? undefined] as const;
               }),
             );
@@ -773,7 +771,7 @@ export function LiveMatchView({
         setIsLoading(false);
       }
     },
-    [apiKey, defaultRegion, liveData],
+    [defaultRegion, liveData],
   );
 
   // Initial load once on mount

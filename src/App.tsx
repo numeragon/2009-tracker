@@ -450,7 +450,6 @@ export default function App() {
           {route === "live" && (
             <LiveMatchView
               defaultRegion={searchRegion}
-              apiKey={settings.apiKey || loadSettingsSync().apiKey}
               assets={assets}
               onSelectPlayer={(name, tag, region) => {
                 void executePlayerSearch(name, tag, region);
@@ -475,7 +474,6 @@ export default function App() {
           {route === "leaderboard" && (
             <LeaderboardView
               defaultRegion={searchRegion}
-              apiKey={settings.apiKey || loadSettingsSync().apiKey}
               assets={assets}
               favorites={favorites}
               history={history}

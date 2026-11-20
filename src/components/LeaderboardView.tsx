@@ -28,7 +28,6 @@ import { ErrorBanner } from "./ErrorBanner";
 
 interface LeaderboardViewProps {
   defaultRegion: Region;
-  apiKey: string;
   assets: ValorantAssetsCatalog;
   favorites: SavedPlayerEntry[];
   history: SavedPlayerEntry[];
@@ -60,7 +59,6 @@ function formatUpdatedTime(iso: string | null): string | null {
 
 export function LeaderboardView({
   defaultRegion,
-  apiKey,
   assets,
   favorites,
   history,
@@ -102,7 +100,7 @@ export function LeaderboardView({
       setError(null);
 
       try {
-        const bundle = await fetchLeaderboardSlice(region, apiKey, {
+        const bundle = await fetchLeaderboardSlice(region, {
           startIndex: chunkStart,
           size: CHUNK_SIZE,
           forceRefresh: options?.forceRefresh,
@@ -124,7 +122,7 @@ export function LeaderboardView({
         }
       }
     },
-    [apiKey],
+    [],
   );
 
   // Reload when region changes
@@ -236,7 +234,7 @@ export function LeaderboardView({
       setLookupResult(null);
 
       try {
-        const res = await lookupLeaderboardPlayer(targetRegion, riotId, apiKey);
+        const res = await lookupLeaderboardPlayer(targetRegion, riotId);
         setLookupResult(res);
         if (res.foundOnLeaderboard && res.entry) {
           setHighlightRank(res.entry.rank);
@@ -247,7 +245,7 @@ export function LeaderboardView({
         setLookupLoading(false);
       }
     },
-    [lbRegion, apiKey],
+    [lbRegion],
   );
 
   const radiantThreshold = useMemo(() => {

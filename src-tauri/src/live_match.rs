@@ -8,7 +8,7 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::OpenOptionsExt;
@@ -123,13 +123,37 @@ pub(crate) fn read_lockfile() -> Option<LockfileInfo> {
     })
 }
 
+#[derive(Clone)]
 pub(crate) struct LogDiscovery {
     pub(crate) glz_region: Option<String>,
     pub(crate) shard: Option<String>,
     pub(crate) client_version: Option<String>,
 }
 
+static LOG_CACHE: OnceLock<Mutex<Option<(LogDiscovery, Instant)>>> = OnceLock::new();
+
+fn log_cache() -> &'static Mutex<Option<(LogDiscovery, Instant)>> {
+    LOG_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// ShooterGame.log can be tens of MB, so keep the parsed result briefly: a
+/// live match refresh resolves stats for up to ten players in a row.
 pub(crate) fn scan_shooter_game_log() -> LogDiscovery {
+    if let Ok(guard) = log_cache().lock() {
+        if let Some((info, at)) = guard.as_ref() {
+            if at.elapsed() < Duration::from_secs(5) {
+                return info.clone();
+            }
+        }
+    }
+    let info = scan_shooter_game_log_uncached();
+    if let Ok(mut guard) = log_cache().lock() {
+        *guard = Some((info.clone(), Instant::now()));
+    }
+    info
+}
+
+fn scan_shooter_game_log_uncached() -> LogDiscovery {
     let mut out = LogDiscovery {
         glz_region: None,
         shard: None,
@@ -814,6 +838,754 @@ async fn fetch_party_snapshot(
         mode_id,
         map_url,
     }
+}
+
+/* ---------- Riot cloud API (self-hosted replacement for HenrikDev) ---------- */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivePlayerStatsResponse {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub tier: i64,
+    pub rr: i64,
+    pub peak_tier: Option<i64>,
+    pub peak_season: Option<String>,
+    pub wins: Option<i64>,
+    pub games: Option<i64>,
+    pub kd: Option<f64>,
+    pub hs_percent: Option<f64>,
+    pub kd_sample: i64,
+}
+
+impl LivePlayerStatsResponse {
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            message: Some(message.into()),
+            tier: 0,
+            rr: 0,
+            peak_tier: None,
+            peak_season: None,
+            wins: None,
+            games: None,
+            kd: None,
+            hs_percent: None,
+            kd_sample: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardPlayerDto {
+    pub puuid: Option<String>,
+    pub game_name: String,
+    pub tag_line: String,
+    pub rank: i64,
+    pub rr: i64,
+    pub wins: i64,
+    pub tier: i64,
+    pub card_id: Option<String>,
+    pub title_id: Option<String>,
+    pub is_anonymized: bool,
+    pub is_banned: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardThresholdDto {
+    pub tier: i64,
+    pub rr_threshold: i64,
+    pub start_index: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaderboardSliceResponse {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub players: Vec<LeaderboardPlayerDto>,
+    pub thresholds: Vec<LeaderboardThresholdDto>,
+    pub total_players: i64,
+    pub start_index: i64,
+}
+
+impl LeaderboardSliceResponse {
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            message: Some(message.into()),
+            players: Vec::new(),
+            thresholds: Vec::new(),
+            total_players: 0,
+            start_index: 0,
+        }
+    }
+}
+
+struct CloudAuth {
+    access_token: String,
+    entitlement: String,
+    shard: String,
+    client_version: String,
+}
+
+fn cloud_headers(auth: &CloudAuth) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", auth.access_token)) {
+        headers.insert(AUTHORIZATION, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&auth.entitlement) {
+        headers.insert("X-Riot-Entitlements-JWT", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&auth.client_version) {
+        headers.insert("X-Riot-ClientVersion", v);
+    }
+    headers.insert(
+        "X-Riot-ClientPlatform",
+        HeaderValue::from_static(CLIENT_PLATFORM_B64),
+    );
+    headers
+}
+
+/// Prefers the running Riot Client (fresh tokens for any account) and falls
+/// back to the Riot account session saved by the shop login.
+async fn resolve_cloud_auth(
+    local_client: &reqwest::Client,
+    remote_client: &reqwest::Client,
+    session: Option<&crate::riot_auth::RiotSessionInput>,
+    region_fallback: Option<&str>,
+) -> Result<CloudAuth, String> {
+    let log_info = scan_shooter_game_log();
+    let (_glz, fb_shard) = fallback_glz_and_shard(region_fallback.unwrap_or("ap"));
+    let shard = log_info.shard.clone().unwrap_or(fb_shard);
+
+    let mut tokens: Option<(String, String)> = None;
+    if let Some(lock) = read_lockfile() {
+        let basic = BASE64.encode(format!("riot:{}", lock.password));
+        let url = format!("https://127.0.0.1:{}/entitlements/v1/token", lock.port);
+        if let Ok(resp) = local_client
+            .get(&url)
+            .header(AUTHORIZATION, format!("Basic {basic}"))
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(data) = resp.json::<EntitlementsTokenResp>().await {
+                    if !data.access_token.is_empty() {
+                        tokens = Some((data.access_token, data.token));
+                    }
+                }
+            }
+        }
+    }
+
+    if tokens.is_none() {
+        if let Some(session) = session {
+            if !session.access_token.is_empty() {
+                let entitlement =
+                    crate::riot_auth::fetch_entitlements(remote_client, &session.access_token)
+                        .await
+                        .unwrap_or_else(|_| session.entitlements.clone());
+                tokens = Some((session.access_token.clone(), entitlement));
+            }
+        }
+    }
+
+    let Some((access_token, entitlement)) = tokens else {
+        return Err(
+            "VALORANT（Riot Client）を起動するか、ショップ画面からRiotアカウントにログインしてください。"
+                .to_string(),
+        );
+    };
+
+    let client_version = resolve_client_version(remote_client, log_info.client_version).await;
+    Ok(CloudAuth {
+        access_token,
+        entitlement,
+        shard,
+        client_version,
+    })
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
+}
+
+fn iso_now_utc() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+#[derive(Clone)]
+struct SeasonsInfo {
+    current_act_id: Option<String>,
+    names: HashMap<String, String>,
+}
+
+static SEASONS_CACHE: OnceLock<Mutex<Option<(SeasonsInfo, Instant)>>> = OnceLock::new();
+
+fn seasons_cache() -> &'static Mutex<Option<(SeasonsInfo, Instant)>> {
+    SEASONS_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+/// Current act UUID plus a UUID → act name map, read from valorant-api.com.
+async fn load_seasons(client: &reqwest::Client) -> Option<SeasonsInfo> {
+    if let Ok(guard) = seasons_cache().lock() {
+        if let Some((info, at)) = guard.as_ref() {
+            if at.elapsed() < Duration::from_secs(3600) {
+                return Some(info.clone());
+            }
+        }
+    }
+
+    let json = client
+        .get("https://valorant-api.com/v1/seasons")
+        .send()
+        .await
+        .ok()?
+        .json::<Value>()
+        .await
+        .ok()?;
+    let acts = json.get("data")?.as_array()?;
+    let now = iso_now_utc();
+    let mut current: Option<(String, String)> = None;
+    let mut names = HashMap::new();
+
+    for act in acts {
+        if act.get("type").and_then(|v| v.as_str()) != Some("EAresSeasonType::Act") {
+            continue;
+        }
+        let Some(uuid) = act.get("uuid").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if let Some(name) = act.get("displayName").and_then(|v| v.as_str()) {
+            names.insert(uuid.to_string(), name.to_string());
+        }
+        let start = act
+            .get("startTime")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !start.is_empty() && start <= now.as_str() {
+            let newer = current
+                .as_ref()
+                .map(|(best, _)| start > best.as_str())
+                .unwrap_or(true);
+            if newer {
+                current = Some((start.to_string(), uuid.to_string()));
+            }
+        }
+    }
+
+    let info = SeasonsInfo {
+        current_act_id: current.map(|(_, id)| id),
+        names,
+    };
+    if let Ok(mut guard) = seasons_cache().lock() {
+        *guard = Some((info.clone(), Instant::now()));
+    }
+    Some(info)
+}
+
+const LIVE_STATS_TTL: Duration = Duration::from_secs(600);
+
+static LIVE_STATS_CACHE: OnceLock<Mutex<HashMap<String, (LivePlayerStatsResponse, Instant)>>> =
+    OnceLock::new();
+
+fn live_stats_cache() -> &'static Mutex<HashMap<String, (LivePlayerStatsResponse, Instant)>> {
+    LIVE_STATS_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+async fn fetch_kd_stats(
+    client: &reqwest::Client,
+    pd: &str,
+    headers: &HeaderMap,
+    puuid: &str,
+) -> (Option<f64>, Option<f64>, i64) {
+    let history_url = format!(
+        "{pd}/match-history/v1/history/{puuid}?startIndex=0&endIndex=10"
+    );
+    let Ok(resp) = client
+        .get(&history_url)
+        .headers(headers.clone())
+        .send()
+        .await
+    else {
+        return (None, None, 0);
+    };
+    if !resp.status().is_success() {
+        return (None, None, 0);
+    }
+    let Ok(history) = resp.json::<Value>().await else {
+        return (None, None, 0);
+    };
+    let match_ids: Vec<String> = history
+        .get("History")
+        .and_then(|v| v.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|m| {
+                    m.get("QueueID").and_then(|v| v.as_str()) == Some("competitive")
+                })
+                .filter_map(|m| m.get("MatchID").and_then(|v| v.as_str()).map(String::from))
+                .take(3)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut kills = 0i64;
+    let mut deaths = 0i64;
+    let mut head = 0i64;
+    let mut shots = 0i64;
+    let mut sample = 0i64;
+
+    for match_id in match_ids {
+        let url = format!("{pd}/match-details/v1/matches/{match_id}");
+        let Ok(resp) = client.get(&url).headers(headers.clone()).send().await else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(details) = resp.json::<Value>().await else {
+            continue;
+        };
+        let Some(players) = details.get("players").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for player in players {
+            let subject = player.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+            if !subject.eq_ignore_ascii_case(puuid) {
+                continue;
+            }
+            let stats = player.get("stats");
+            let k = stats
+                .and_then(|s| s.get("kills"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let d = stats
+                .and_then(|s| s.get("deaths"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let h = stats
+                .and_then(|s| s.get("headshots"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let b = stats
+                .and_then(|s| s.get("bodyshots"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let l = stats
+                .and_then(|s| s.get("legshots"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            kills += k;
+            deaths += d;
+            head += h;
+            shots += h + b + l;
+            sample += 1;
+            break;
+        }
+    }
+
+    if sample == 0 {
+        return (None, None, 0);
+    }
+    let kd = if deaths > 0 {
+        (kills as f64 / deaths as f64 * 100.0).round() / 100.0
+    } else {
+        kills as f64
+    };
+    let hs = if shots > 0 {
+        ((head as f64 / shots as f64) * 1000.0).round() / 10.0
+    } else {
+        return (Some(kd), None, sample);
+    };
+    (Some(kd), Some(hs), sample)
+}
+
+#[tauri::command]
+pub async fn fetch_live_player_stats(
+    puuid: String,
+    region_fallback: Option<String>,
+    session: Option<crate::riot_auth::RiotSessionInput>,
+) -> Result<LivePlayerStatsResponse, String> {
+    let puuid = puuid.trim().to_string();
+    if puuid.is_empty() {
+        return Ok(LivePlayerStatsResponse::error("プレイヤーIDが空です。"));
+    }
+    let key = puuid.to_lowercase();
+    if let Ok(guard) = live_stats_cache().lock() {
+        if let Some((cached, at)) = guard.get(&key) {
+            if at.elapsed() < LIVE_STATS_TTL {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
+    let local_client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|e| format!("ローカルHTTPクライアント初期化エラー: {e}"))?;
+    let remote_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|e| format!("HTTPクライアント初期化エラー: {e}"))?;
+
+    let auth = match resolve_cloud_auth(
+        &local_client,
+        &remote_client,
+        session.as_ref(),
+        region_fallback.as_deref(),
+    )
+    .await
+    {
+        Ok(auth) => auth,
+        Err(message) => return Ok(LivePlayerStatsResponse::error(message)),
+    };
+    let headers = cloud_headers(&auth);
+    let pd = format!("https://pd.{}.a.pvp.net", auth.shard);
+
+    let mut response = LivePlayerStatsResponse::error("プレイヤー統計を取得できませんでした。");
+    response.ok = true;
+    response.message = None;
+
+    let mmr_url = format!("{pd}/mmr/v1/players/{puuid}");
+    if let Ok(resp) = remote_client
+        .get(&mmr_url)
+        .headers(headers.clone())
+        .send()
+        .await
+    {
+        if resp.status().is_success() {
+            if let Ok(mmr) = resp.json::<Value>().await {
+                let seasons = mmr.pointer("/QueueSkills/competitive/SeasonalInfoBySeasonID");
+                let seasons_info = load_seasons(&remote_client).await;
+                let latest_season = mmr
+                    .pointer("/LatestCompetitiveUpdate/SeasonID")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                let season_key = seasons_info
+                    .as_ref()
+                    .and_then(|s| s.current_act_id.clone())
+                    .or(latest_season);
+
+                if let (Some(seasons), Some(season_key)) = (seasons, season_key) {
+                    if let Some(current) = seasons.get(&season_key) {
+                        response.tier = current
+                            .get("CompetitiveTier")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        response.rr = current
+                            .get("RankedRating")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        response.wins = current
+                            .get("NumberOfWins")
+                            .and_then(|v| v.as_i64());
+                        response.games = current
+                            .get("NumberOfGames")
+                            .and_then(|v| v.as_i64());
+                    }
+                }
+
+                if let Some(map) = seasons.and_then(|v| v.as_object()) {
+                    let mut peak = 0i64;
+                    let mut peak_key: Option<&String> = None;
+                    for (season, info) in map {
+                        let tier = info
+                            .get("CompetitiveTier")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+                        if tier > peak {
+                            peak = tier;
+                            peak_key = Some(season);
+                        }
+                    }
+                    if peak > 0 {
+                        response.peak_tier = Some(peak);
+                        response.peak_season = peak_key.and_then(|k| {
+                            seasons_info
+                                .as_ref()
+                                .and_then(|s| s.names.get(k).cloned())
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let (kd, hs, sample) = fetch_kd_stats(&remote_client, &pd, &headers, &puuid).await;
+    response.kd = kd;
+    response.hs_percent = hs;
+    response.kd_sample = sample;
+
+    if let Ok(mut guard) = live_stats_cache().lock() {
+        guard.insert(key, (response.clone(), Instant::now()));
+    }
+    Ok(response)
+}
+
+const LEADERBOARD_TTL: Duration = Duration::from_secs(300);
+
+static LEADERBOARD_CACHE: OnceLock<
+    Mutex<HashMap<String, (LeaderboardSliceResponse, Instant)>>,
+> = OnceLock::new();
+
+fn leaderboard_cache() -> &'static Mutex<HashMap<String, (LeaderboardSliceResponse, Instant)>> {
+    LEADERBOARD_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[tauri::command]
+pub async fn fetch_leaderboard_slice(
+    region: String,
+    start_index: Option<i64>,
+    size: Option<i64>,
+    query: Option<String>,
+    session: Option<crate::riot_auth::RiotSessionInput>,
+) -> Result<LeaderboardSliceResponse, String> {
+    let region = region.trim().to_lowercase();
+    if region.is_empty() {
+        return Ok(LeaderboardSliceResponse::error("リージョンが指定されていません。"));
+    }
+    let start = start_index.unwrap_or(0).max(0);
+    let size = size.unwrap_or(100).clamp(1, 1000);
+    let query = query.unwrap_or_default().trim().to_string();
+    let key = format!("{region}:{start}:{size}:{}", query.to_lowercase());
+
+    if let Ok(guard) = leaderboard_cache().lock() {
+        if let Some((cached, at)) = guard.get(&key) {
+            if at.elapsed() < LEADERBOARD_TTL {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
+    let local_client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|e| format!("ローカルHTTPクライアント初期化エラー: {e}"))?;
+    let remote_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|e| format!("HTTPクライアント初期化エラー: {e}"))?;
+
+    let auth = match resolve_cloud_auth(
+        &local_client,
+        &remote_client,
+        session.as_ref(),
+        Some(&region),
+    )
+    .await
+    {
+        Ok(auth) => auth,
+        Err(message) => return Ok(LeaderboardSliceResponse::error(message)),
+    };
+
+    let Some(seasons) = load_seasons(&remote_client).await else {
+        return Ok(LeaderboardSliceResponse::error(
+            "現在のシーズン情報を取得できませんでした。",
+        ));
+    };
+    let Some(act_id) = seasons.current_act_id else {
+        return Ok(LeaderboardSliceResponse::error(
+            "現在のシーズンIDを特定できませんでした。",
+        ));
+    };
+
+    let (_glz, shard) = fallback_glz_and_shard(&region);
+    let affinity = shard;
+    let base = format!(
+        "https://pd.{}.a.pvp.net/mmr/v1/leaderboards/affinity/{affinity}/queue/competitive",
+        auth.shard
+    );
+    let mut query_suffix = format!("?startIndex={start}&size={size}");
+    if !query.is_empty() {
+        query_suffix.push_str(&format!("&query={}", urlencoding(&query)));
+    }
+
+    // Current clients use `season/{act}`; older builds only accept `act/{act}`.
+    let mut resp = remote_client
+        .get(format!("{base}/season/{act_id}{query_suffix}"))
+        .headers(cloud_headers(&auth))
+        .send()
+        .await;
+    if let Ok(r) = &resp {
+        if r.status().as_u16() == 400 || r.status().as_u16() == 404 {
+            resp = remote_client
+                .get(format!("{base}/act/{act_id}{query_suffix}"))
+                .headers(cloud_headers(&auth))
+                .send()
+                .await;
+        }
+    }
+    let resp = match resp {
+        Ok(resp) => resp,
+        Err(e) => {
+            return Ok(LeaderboardSliceResponse::error(format!(
+                "リーダーボードの取得に失敗しました: {e}"
+            )));
+        }
+    };
+
+    if !resp.status().is_success() {
+        let code = resp.status().as_u16();
+        let message = if code == 401 || code == 403 {
+            "認証に失敗しました。VALORANT を起動し直すか、ショップ画面から再ログインしてください。".to_string()
+        } else {
+            format!("リーダーボードの取得に失敗しました (HTTP {code})。")
+        };
+        return Ok(LeaderboardSliceResponse::error(message));
+    }
+
+    let json = match resp.json::<Value>().await {
+        Ok(json) => json,
+        Err(e) => {
+            return Ok(LeaderboardSliceResponse::error(format!(
+                "リーダーボードの解析に失敗しました: {e}"
+            )));
+        }
+    };
+
+    let players = json
+        .get("Players")
+        .and_then(|v| v.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|p| LeaderboardPlayerDto {
+                    puuid: p
+                        .get("puuid")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_lowercase()),
+                    game_name: p
+                        .get("gameName")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    tag_line: p
+                        .get("tagLine")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    rank: p
+                        .get("leaderboardRank")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0),
+                    rr: p.get("rankedRating").and_then(|v| v.as_i64()).unwrap_or(0),
+                    wins: p
+                        .get("numberOfWins")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0),
+                    tier: p
+                        .get("competitiveTier")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0),
+                    card_id: p
+                        .get("PlayerCardID")
+                        .and_then(|v| v.as_str())
+                        .filter(|v| !is_zero_guid(v))
+                        .map(String::from),
+                    title_id: p
+                        .get("TitleID")
+                        .and_then(|v| v.as_str())
+                        .filter(|v| !is_zero_guid(v))
+                        .map(String::from),
+                    is_anonymized: p
+                        .get("IsAnonymized")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                    is_banned: p
+                        .get("IsBanned")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut thresholds: Vec<LeaderboardThresholdDto> = json
+        .get("tierDetails")
+        .and_then(|v| v.as_object())
+        .map(|details| {
+            details
+                .iter()
+                .filter_map(|(tier, detail)| {
+                    let tier = tier.parse::<i64>().ok()?;
+                    Some(LeaderboardThresholdDto {
+                        tier,
+                        rr_threshold: detail
+                            .get("rankedRatingThreshold")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0),
+                        start_index: detail
+                            .get("startingIndex")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    thresholds.sort_by(|a, b| b.tier.cmp(&a.tier));
+
+    let response = LeaderboardSliceResponse {
+        ok: true,
+        message: None,
+        players,
+        thresholds,
+        total_players: json
+            .get("totalPlayers")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0),
+        start_index: json
+            .get("startIndex")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(start),
+    };
+
+    if let Ok(mut guard) = leaderboard_cache().lock() {
+        guard.insert(key, (response.clone(), Instant::now()));
+    }
+    Ok(response)
+}
+
+fn urlencoding(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1558,5 +2330,12 @@ mod tests {
             resolve_player_name(&map, "ABC", &payload),
             ("RealName".to_string(), "JP1".to_string())
         );
+    }
+
+    #[test]
+    fn civil_dates_match_known_days() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(20_454), (2026, 1, 1));
+        assert_eq!(civil_from_days(20_697), (2026, 9, 1));
     }
 }

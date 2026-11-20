@@ -477,6 +477,46 @@ export interface PlayerLoadoutResponse {
   titleId: string | null;
 }
 
+/** Self-hosted Riot stats (replaces the HenrikDev live lookup). */
+export interface LivePlayerStatsResponse {
+  ok: boolean;
+  message: string | null;
+  tier: number;
+  rr: number;
+  peakTier: number | null;
+  peakSeason: string | null;
+  wins: number | null;
+  games: number | null;
+  kd: number | null;
+  hsPercent: number | null;
+  kdSample: number;
+}
+
+export interface LeaderboardSliceResponse {
+  ok: boolean;
+  message: string | null;
+  players: Array<{
+    puuid: string | null;
+    gameName: string;
+    tagLine: string;
+    rank: number;
+    rr: number;
+    wins: number;
+    tier: number;
+    cardId: string | null;
+    titleId: string | null;
+    isAnonymized: boolean;
+    isBanned: boolean;
+  }>;
+  thresholds: Array<{
+    tier: number;
+    rrThreshold: number;
+    startIndex: number;
+  }>;
+  totalPlayers: number;
+  startIndex: number;
+}
+
 export interface TierAsset {
   tier: number;
   tierName: string;

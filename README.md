@@ -51,6 +51,8 @@ UI だけをブラウザで確認する場合は `npm.cmd run dev`（既定: htt
 
 キーは PC 内（Tauri store / localStorage）にのみ保存され、HenrikDev API へのリクエストヘッダー以外には送信されません。
 
+> ライブ画面のランク・K/D・HS とリーダーボードは、Riot のクライアント／ログインセッションから直接取得します（HenrikDev のレートリミットの影響を受けません）。API キーはプロフィール検索・試合履歴の取得にのみ使用します。
+
 ## ビルド・リリースコマンド
 
 ```powershell

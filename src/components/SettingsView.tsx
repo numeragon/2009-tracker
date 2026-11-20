@@ -91,7 +91,7 @@ export function SettingsView({ settings, onSaveSettings }: SettingsViewProps) {
       <div className="mb-8">
         <h1 className="text-xl font-semibold tracking-tight text-[#ededed]">設定</h1>
         <p className="text-sm text-[#8f8f8f] mt-1.5">
-          HenrikDev APIキーとデフォルトリージョンを管理します。設定はお使いのPC内にのみ保存されます。
+          APIキーとデフォルトリージョンを管理します。設定はお使いのPC内にのみ保存されます。
         </p>
       </div>
 
@@ -107,7 +107,8 @@ export function SettingsView({ settings, onSaveSettings }: SettingsViewProps) {
               </span>
             </div>
             <p className="text-xs text-[#8f8f8f] mt-2 leading-relaxed">
-              戦績データの取得には HenrikDev 非公式APIのキーが必要です。キーはリクエスト時の{" "}
+              プロフィール検索と試合履歴の取得に使用します。ライブ画面のランク・K/D とリーダーボードは
+              Riot のクライアント／ログインから直接取得するため、APIキーは不要です。キーはリクエスト時の{" "}
               <code className="font-num text-[#ededed]">Authorization</code>{" "}
               ヘッダー以外には送信されません。
             </p>
