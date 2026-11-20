@@ -64,6 +64,7 @@ pub fn run() {
             window_close_or_tray,
             live_match::fetch_live_match,
             live_match::fetch_player_loadout,
+            live_match::fetch_match_loadouts,
             live_match::fetch_live_player_stats,
             live_match::fetch_leaderboard_slice,
             local_api::fetch_crosshair_settings,

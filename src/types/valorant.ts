@@ -517,6 +517,19 @@ export interface LeaderboardSliceResponse {
   startIndex: number;
 }
 
+/** Equipped skins for every player in the current match. */
+export interface MatchLoadoutsResponse {
+  ok: boolean;
+  message: string | null;
+  players: Array<{
+    puuid: string;
+    weapons: Array<{
+      weaponId: string;
+      items: Array<{ id: string; typeId: string }>;
+    }>;
+  }>;
+}
+
 export interface TierAsset {
   tier: number;
   tierName: string;
@@ -528,6 +541,8 @@ export interface WeaponAsset {
   uuid: string;
   displayName: string;
   displayIcon?: string;
+  /** Position in valorant-api's canonical weapon list (locker ordering). */
+  order?: number;
 }
 
 export interface HenrikLeaderboardV3Threshold {

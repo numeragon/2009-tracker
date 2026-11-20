@@ -6,7 +6,7 @@ import type {
 } from "../types/valorant";
 import { getCachedData, setCachedData } from "./storage";
 
-const ASSETS_CACHE_KEY = "valorant_api_assets_ja_v2";
+const ASSETS_CACHE_KEY = "valorant_api_assets_ja_v3";
 const ASSETS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const EMPTY_CATALOG: ValorantAssetsCatalog = {
@@ -159,11 +159,12 @@ export async function loadValorantAssets(): Promise<ValorantAssetsCatalog> {
         }
       }
 
-      for (const w of weaponsJaRes.data ?? []) {
+      for (const [index, w] of (weaponsJaRes.data ?? []).entries()) {
         catalog.weaponsById[normKey(w.uuid)] = {
           uuid: w.uuid,
           displayName: w.displayName,
           displayIcon: w.displayIcon,
+          order: index,
         };
       }
 

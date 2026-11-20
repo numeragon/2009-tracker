@@ -449,6 +449,181 @@ async fn fetch_local_identity_names() -> HashMap<String, (String, String)> {
     map
 }
 
+/* ---------- Persistent player-name cache ---------- */
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct NameCacheEntry {
+    game: String,
+    tag: String,
+}
+
+fn name_cache_path() -> Option<PathBuf> {
+    get_local_app_data().map(|base| base.join("2009-tracker").join("name_cache.json"))
+}
+
+static NAME_DB: OnceLock<Mutex<Option<HashMap<String, NameCacheEntry>>>> = OnceLock::new();
+
+fn name_db() -> &'static Mutex<Option<HashMap<String, NameCacheEntry>>> {
+    NAME_DB.get_or_init(|| Mutex::new(None))
+}
+
+fn load_name_db() -> HashMap<String, NameCacheEntry> {
+    let Some(path) = name_cache_path() else {
+        return HashMap::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+fn write_name_db(map: &HashMap<String, NameCacheEntry>) {
+    let Some(path) = name_cache_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_vec(map) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn name_db_get(puuid: &str) -> Option<(String, String)> {
+    let key = puuid.to_lowercase();
+    let mut guard = name_db().lock().ok()?;
+    if guard.is_none() {
+        *guard = Some(load_name_db());
+    }
+    let entry = guard.as_ref()?.get(&key)?;
+    if is_generic_name(&entry.game) {
+        return None;
+    }
+    Some((entry.game.clone(), entry.tag.clone()))
+}
+
+fn name_db_store_many(entries: &HashMap<String, (String, String)>) {
+    if entries.is_empty() {
+        return;
+    }
+    let mut guard = match name_db().lock() {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
+    if guard.is_none() {
+        *guard = Some(load_name_db());
+    }
+    let Some(map) = guard.as_mut() else {
+        return;
+    };
+    let mut changed = false;
+    for (puuid, (game, tag)) in entries {
+        if game.trim().is_empty() || is_generic_name(game) {
+            continue;
+        }
+        let key = puuid.to_lowercase();
+        if map.get(&key).map(|e| e.game == *game).unwrap_or(false) {
+            continue;
+        }
+        map.insert(
+            key,
+            NameCacheEntry {
+                game: game.clone(),
+                tag: tag.clone(),
+            },
+        );
+        changed = true;
+    }
+    if changed {
+        if map.len() > 5000 {
+            let keep: HashMap<String, NameCacheEntry> = map
+                .iter()
+                .take(5000)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            *map = keep;
+        }
+        write_name_db(map);
+    }
+}
+
+static HENRIK_KEY: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static HENRIK_REGION: OnceLock<Mutex<String>> = OnceLock::new();
+
+fn henrik_api_key() -> Option<String> {
+    HENRIK_KEY
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+fn henrik_region() -> String {
+    HENRIK_REGION
+        .get_or_init(|| Mutex::new(String::new()))
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_default()
+}
+
+/// Riot's public name lookup by PUUID is not affected by the incognito display
+/// filter, so this is what actually reveals hidden names. Only called for
+/// players that every local source failed to resolve, and the result is stored
+/// in the persistent name cache.
+async fn henrik_name_at(
+    client: &reqwest::Client,
+    url: &str,
+    api_key: &str,
+    pointer: &str,
+) -> Option<(String, String)> {
+    let resp = client
+        .get(url)
+        .header(AUTHORIZATION, api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let json = resp.json::<Value>().await.ok()?;
+    let account = json.pointer(pointer)?;
+    let game = account
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let tag = account
+        .get("tag")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    if game.is_empty() || is_generic_name(game) {
+        return None;
+    }
+    Some((game.to_string(), tag.to_string()))
+}
+
+async fn henrik_account_name(
+    client: &reqwest::Client,
+    puuid: &str,
+    api_key: &str,
+) -> Option<(String, String)> {
+    let region = henrik_region();
+    let region = if region.is_empty() { "ap".to_string() } else { region };
+
+    // MMR v3 carries the account document; fall back to the account endpoint
+    // for players without a competitive record.
+    let mmr_url =
+        format!("https://api.henrikdev.xyz/valorant/v3/by-puuid/mmr/{region}/pc/{puuid}");
+    if let Some(pair) = henrik_name_at(client, &mmr_url, api_key, "/data/account").await {
+        return Some(pair);
+    }
+    let account_url =
+        format!("https://api.henrikdev.xyz/valorant/v1/by-puuid/account/{puuid}");
+    henrik_name_at(client, &account_url, api_key, "/data").await
+}
+
 async fn resolve_names(
     remote_client: &reqwest::Client,
     shard: &str,
@@ -501,10 +676,41 @@ async fn resolve_names(
         }
     }
 
-    // Last resort for incognito players: their older matches store the real
-    // Riot ID in `match-details`, which is not affected by the display filter.
+    // Persistent cache: names revealed in earlier sessions (post-match
+    // scoreboards are not masked) resolve instantly and for free.
+    for puuid in puuids {
+        if map.contains_key(&puuid.to_lowercase()) {
+            continue;
+        }
+        if let Some(pair) = name_db_get(puuid) {
+            map.insert(puuid.to_lowercase(), pair);
+        }
+    }
+
+    // Older matches may still store the real Riot ID in `match-details`.
     reveal_names_from_history(remote_client, shard, headers, puuids, &mut map).await;
 
+    // Riot's PUUID lookup (via HenrikDev) is not affected by incognito mode,
+    // so this is what actually breaks the display filter. Only used for
+    // players no local source could resolve, and cached forever afterwards.
+    if let Some(api_key) = henrik_api_key() {
+        let mut lookups = 0usize;
+        for puuid in puuids {
+            let key = puuid.to_lowercase();
+            if map.contains_key(&key) {
+                continue;
+            }
+            if lookups >= 5 {
+                break;
+            }
+            lookups += 1;
+            if let Some(pair) = henrik_account_name(remote_client, puuid, &api_key).await {
+                map.insert(key, pair);
+            }
+        }
+    }
+
+    name_db_store_many(&map);
     map
 }
 
@@ -1588,6 +1794,205 @@ fn urlencoding(value: &str) -> String {
     out
 }
 
+/* ---------- Match loadouts (all players, pregame / current game) ---------- */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchLoadoutItemDto {
+    pub id: String,
+    pub type_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchLoadoutWeaponDto {
+    pub weapon_id: String,
+    pub items: Vec<MatchLoadoutItemDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchLoadoutPlayerDto {
+    pub puuid: String,
+    pub weapons: Vec<MatchLoadoutWeaponDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchLoadoutsResponse {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub players: Vec<MatchLoadoutPlayerDto>,
+}
+
+impl MatchLoadoutsResponse {
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            message: Some(message.into()),
+            players: Vec::new(),
+        }
+    }
+}
+
+static MATCH_LOADOUT_CACHE: OnceLock<
+    Mutex<HashMap<String, (MatchLoadoutsResponse, Instant)>>,
+> = OnceLock::new();
+
+fn match_loadout_cache() -> &'static Mutex<HashMap<String, (MatchLoadoutsResponse, Instant)>> {
+    MATCH_LOADOUT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Equipped skins for every player in the current match. The per-player
+/// `personalization` endpoint only answers for your own PUUID, so this is the
+/// only way to show teammates'/enemies' lockers.
+#[tauri::command]
+pub async fn fetch_match_loadouts(
+    match_id: String,
+    phase: Option<String>,
+    region_fallback: Option<String>,
+    session: Option<crate::riot_auth::RiotSessionInput>,
+) -> Result<MatchLoadoutsResponse, String> {
+    let match_id = match_id.trim().to_string();
+    if match_id.is_empty() {
+        return Ok(MatchLoadoutsResponse::error("試合IDが空です。"));
+    }
+    if let Ok(guard) = match_loadout_cache().lock() {
+        if let Some((cached, at)) = guard.get(&match_id) {
+            if at.elapsed() < Duration::from_secs(300) {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
+    let local_client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|e| format!("ローカルHTTPクライアント初期化エラー: {e}"))?;
+    let remote_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|e| format!("HTTPクライアント初期化エラー: {e}"))?;
+
+    let auth = match resolve_cloud_auth(
+        &local_client,
+        &remote_client,
+        session.as_ref(),
+        region_fallback.as_deref(),
+    )
+    .await
+    {
+        Ok(auth) => auth,
+        Err(message) => return Ok(MatchLoadoutsResponse::error(message)),
+    };
+
+    let log_info = scan_shooter_game_log();
+    let (fb_glz, _) = fallback_glz_and_shard(region_fallback.as_deref().unwrap_or("ap"));
+    let glz_region = log_info.glz_region.unwrap_or(fb_glz);
+    let is_pregame = phase
+        .as_deref()
+        .map(|p| p.eq_ignore_ascii_case("PREGAME"))
+        .unwrap_or(false);
+    let path = if is_pregame { "pregame" } else { "core-game" };
+    let url = format!(
+        "https://glz-{glz_region}-1.{}.a.pvp.net/{path}/v1/matches/{match_id}/loadouts",
+        auth.shard
+    );
+
+    let resp = match remote_client
+        .get(&url)
+        .headers(cloud_headers(&auth))
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            return Ok(MatchLoadoutsResponse::error(format!(
+                "ロッカーの取得に失敗しました: {e}"
+            )));
+        }
+    };
+
+    if !resp.status().is_success() {
+        let code = resp.status().as_u16();
+        let message = if code == 401 || code == 403 {
+            "ロッカーを取得できませんでした（認証エラー）。VALORANT を起動し直してください。"
+                .to_string()
+        } else if code == 404 {
+            "この試合のロッカーはまだ取得できません。".to_string()
+        } else {
+            format!("ロッカーを取得できませんでした (HTTP {code})。")
+        };
+        return Ok(MatchLoadoutsResponse::error(message));
+    }
+
+    let json = match resp.json::<Value>().await {
+        Ok(json) => json,
+        Err(e) => {
+            return Ok(MatchLoadoutsResponse::error(format!(
+                "ロッカーの解析に失敗しました: {e}"
+            )));
+        }
+    };
+
+    let mut players = Vec::new();
+    if let Some(entries) = json.get("Loadouts").and_then(|v| v.as_array()) {
+        for entry in entries {
+            // Pregame puts Subject/Items at the top level; core-game nests them
+            // under `Loadout`.
+            let loadout = entry.get("Loadout").unwrap_or(entry);
+            let Some(subject) = loadout.get("Subject").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(items) = loadout.get("Items").and_then(|v| v.as_object()) else {
+                continue;
+            };
+            let mut weapons = Vec::new();
+            for (weapon_id, weapon) in items {
+                let mut sockets = Vec::new();
+                if let Some(map) = weapon.get("Sockets").and_then(|v| v.as_object()) {
+                    for socket in map.values() {
+                        if let Some(inner) = socket.get("Item") {
+                            let id = inner.get("ID").and_then(|v| v.as_str()).unwrap_or("");
+                            let type_id = inner
+                                .get("TypeID")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            if !id.is_empty() && !is_zero_guid(id) {
+                                sockets.push(MatchLoadoutItemDto {
+                                    id: id.to_string(),
+                                    type_id: type_id.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+                if !sockets.is_empty() {
+                    weapons.push(MatchLoadoutWeaponDto {
+                        weapon_id: weapon_id.clone(),
+                        items: sockets,
+                    });
+                }
+            }
+            players.push(MatchLoadoutPlayerDto {
+                puuid: subject.to_lowercase(),
+                weapons,
+            });
+        }
+    }
+
+    let response = MatchLoadoutsResponse {
+        ok: true,
+        message: None,
+        players,
+    };
+    if let Ok(mut guard) = match_loadout_cache().lock() {
+        guard.insert(match_id, (response.clone(), Instant::now()));
+    }
+    Ok(response)
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoadoutGunDto {
@@ -1805,7 +2210,21 @@ pub async fn fetch_player_loadout(
 }
 
 #[tauri::command]
-pub async fn fetch_live_match(region_fallback: String) -> Result<LiveMatchResponse, String> {
+pub async fn fetch_live_match(
+    region_fallback: String,
+    api_key: Option<String>,
+) -> Result<LiveMatchResponse, String> {
+    // Used by the name resolver when the local sources cannot reveal an
+    // incognito player (see `resolve_names`).
+    if let Ok(mut guard) = HENRIK_KEY.get_or_init(|| Mutex::new(None)).lock() {
+        *guard = api_key
+            .map(|key| key.trim().to_string())
+            .filter(|key| !key.is_empty());
+    }
+    if let Ok(mut guard) = HENRIK_REGION.get_or_init(|| Mutex::new(String::new())).lock() {
+        *guard = region_fallback.trim().to_lowercase();
+    }
+
     let Some(lock) = read_lockfile() else {
         return Ok(LiveMatchResponse {
             status: "NOT_RUNNING".to_string(),

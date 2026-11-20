@@ -15,14 +15,14 @@ import type {
   LiveMatchPlayerRaw,
   LiveMatchResponse,
   LivePlayerRankInfo,
-  PlayerLoadoutResponse,
+  MatchLoadoutsResponse,
   Region,
   StoreCatalog,
   ValorantAssetsCatalog,
 } from "../types/valorant";
 import {
   fetchLiveMatchFromClient,
-  fetchPlayerLoadout,
+  fetchMatchLoadouts,
   fetchPlayerRankByPuuid,
   formatLiveModeLabel,
   normalizeRegion,
@@ -449,23 +449,41 @@ function PlayerLockerTooltip({
   anchor,
   region,
   assets,
+  matchId,
+  phase,
 }: {
   anchor: LockerAnchor;
   region: Region;
   assets: ValorantAssetsCatalog;
+  matchId: string | null;
+  phase: "PREGAME" | "IN_GAME" | null;
 }) {
-  const [loadout, setLoadout] = useState<PlayerLoadoutResponse | null>(null);
+  const [loadouts, setLoadouts] = useState<MatchLoadoutsResponse | null>(null);
+  const [loadoutError, setLoadoutError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<StoreCatalog | null>(null);
 
   useEffect(() => {
+    if (!matchId || !phase) {
+      setLoadoutError(
+        "この画面ではロッカーを取得できません（試合中のみ表示されます）。",
+      );
+      return;
+    }
     let cancelled = false;
-    void fetchPlayerLoadout(anchor.player.puuid, region).then((result) => {
-      if (!cancelled) setLoadout(result);
+    setLoadouts(null);
+    setLoadoutError(null);
+    void fetchMatchLoadouts(matchId, phase, region).then((result) => {
+      if (cancelled) return;
+      if (!result.ok) {
+        setLoadoutError(result.message ?? "ロッカーを取得できませんでした。");
+        return;
+      }
+      setLoadouts(result);
     });
     return () => {
       cancelled = true;
     };
-  }, [anchor.player.puuid, region]);
+  }, [matchId, phase, region]);
 
   useEffect(() => {
     let cancelled = false;
@@ -491,7 +509,19 @@ function PlayerLockerTooltip({
       ? window.innerHeight - anchor.bottom - 20
       : anchor.top - 20;
   const maxHeight = Math.max(180, Math.min(430, available));
-  const card = buildPlayerCardUrls(loadout?.cardId ?? undefined);
+  const card = buildPlayerCardUrls(anchor.player.cardId || undefined);
+  const loading = !loadoutError && loadouts === null;
+  const playerLoadout =
+    loadouts?.players.find(
+      (player) => player.puuid === anchor.player.puuid.toLowerCase(),
+    ) ?? null;
+  const weapons = (playerLoadout?.weapons ?? [])
+    .slice()
+    .sort((a, b) => {
+      const orderA = assets.weaponsById[a.weaponId.toLowerCase()]?.order ?? 999;
+      const orderB = assets.weaponsById[b.weaponId.toLowerCase()]?.order ?? 999;
+      return orderA - orderB;
+    });
 
   return createPortal(
     <div
@@ -524,35 +554,39 @@ function PlayerLockerTooltip({
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col p-3">
-          {!loadout ? (
+          {loading ? (
             <div className="flex h-24 items-center justify-center gap-2 text-[11px] text-[#8f8f8f]">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ロッカーを読み込み中…
             </div>
-          ) : !loadout.ok ? (
+          ) : loadoutError ? (
             <p className="px-1 py-3 text-[11px] leading-relaxed text-[#8f8f8f]">
-              {loadout.message ?? "ロッカーを取得できませんでした。"}
+              {loadoutError}
             </p>
-          ) : loadout.guns.length === 0 ? (
+          ) : weapons.length === 0 ? (
             <p className="px-1 py-3 text-[11px] text-[#8f8f8f]">
               装備情報が見つかりませんでした。
             </p>
           ) : (
             <div className="grid min-h-0 flex-1 grid-cols-3 gap-2 overflow-y-auto pr-1">
-              {loadout.guns.map((gun) => {
-                const weapon = assets.weaponsById[gun.weaponId.toLowerCase()];
+              {weapons.map((weaponEntry) => {
+                const weapon =
+                  assets.weaponsById[weaponEntry.weaponId.toLowerCase()];
                 const skin = catalog
-                  ? resolveStoreSkin(
-                      catalog,
-                      gun.skinLevelId ?? gun.skinId ?? "",
-                    )
+                  ? weaponEntry.items
+                      .map(
+                        (item) =>
+                          resolveStoreSkin(catalog, item.id) ??
+                          resolveStoreSkin(catalog, item.typeId),
+                      )
+                      .find(Boolean)
                   : undefined;
                 const skinName = skin?.name ?? "デフォルト";
                 const weaponName = weapon?.displayName ?? "";
                 const icon = skin?.icon || weapon?.displayIcon || "";
                 return (
                   <div
-                    key={gun.weaponId}
+                    key={weaponEntry.weaponId}
                     className="rounded-[8px] border border-[rgba(255,255,255,0.06)] bg-black/60 p-2"
                   >
                     <div className="flex h-14 items-center justify-center">
@@ -593,6 +627,7 @@ function PlayerLockerTooltip({
 
 interface LiveMatchViewProps {
   defaultRegion: Region;
+  apiKey: string;
   assets: ValorantAssetsCatalog;
   isActiveTab?: boolean;
   onSelectPlayer: (name: string, tag: string, region: Region) => void;
@@ -600,6 +635,7 @@ interface LiveMatchViewProps {
 
 export function LiveMatchView({
   defaultRegion,
+  apiKey,
   assets,
   isActiveTab = true,
   onSelectPlayer,
@@ -721,7 +757,7 @@ export function LiveMatchView({
       setErrorText(null);
 
       try {
-        const resp = await fetchLiveMatchFromClient(defaultRegion);
+        const resp = await fetchLiveMatchFromClient(defaultRegion, apiKey);
         if (seq !== fetchSeqRef.current) return;
         setLiveData(resp);
         setIsLoading(false);
@@ -771,7 +807,7 @@ export function LiveMatchView({
         setIsLoading(false);
       }
     },
-    [defaultRegion, liveData],
+    [apiKey, defaultRegion, liveData],
   );
 
   // Initial load once on mount
@@ -1231,6 +1267,14 @@ export function LiveMatchView({
           anchor={lockerAnchor}
           region={effectiveRegion}
           assets={assets}
+          matchId={activeSavedTab ? null : (viewData?.matchId ?? null)}
+          phase={
+            activeSavedTab
+              ? null
+              : status === "PREGAME" || status === "IN_GAME"
+                ? status
+                : null
+          }
         />
       )}
     </div>

@@ -3,7 +3,7 @@ import type {
   LiveMatchResponse,
   LivePlayerRankInfo,
   LivePlayerStatsResponse,
-  PlayerLoadoutResponse,
+  MatchLoadoutsResponse,
   Region,
 } from "../types/valorant";
 import { getCachedData, setCachedData } from "./storage";
@@ -47,7 +47,10 @@ export function formatLiveModeLabel(modeId?: string | null, queueId?: string | n
   return queueId || "カスタム / その他";
 }
 
-export async function fetchLiveMatchFromClient(regionFallback: Region): Promise<LiveMatchResponse> {
+export async function fetchLiveMatchFromClient(
+  regionFallback: Region,
+  apiKey?: string,
+): Promise<LiveMatchResponse> {
   if (!isTauriRuntime()) {
     return {
       status: "ERROR",
@@ -66,6 +69,7 @@ export async function fetchLiveMatchFromClient(regionFallback: Region): Promise<
 
   return invoke<LiveMatchResponse>("fetch_live_match", {
     regionFallback,
+    apiKey: apiKey?.trim() || null,
   });
 }
 
@@ -119,26 +123,25 @@ export async function fetchPlayerRankByPuuid(
   }
 }
 
-const LOADOUT_CACHE_TTL_MS = 5 * 60 * 1000;
-const loadoutCache = new Map<
+const MATCH_LOADOUT_CACHE_TTL_MS = 5 * 60 * 1000;
+const matchLoadoutCache = new Map<
   string,
-  { at: number; value: PlayerLoadoutResponse }
+  { at: number; value: MatchLoadoutsResponse }
 >();
 
-/** Equipped skins for one player, fetched on demand when the name is hovered. */
-export async function fetchPlayerLoadout(
-  puuid: string,
+/**
+ * Equipped skins for every player in the match. The per-player endpoint only
+ * answers for your own PUUID, so the match loadouts endpoint is required to
+ * show teammates'/enemies' lockers.
+ */
+export async function fetchMatchLoadouts(
+  matchId: string,
+  phase: "PREGAME" | "IN_GAME",
   region: Region,
-): Promise<PlayerLoadoutResponse> {
-  const empty: PlayerLoadoutResponse = {
-    ok: false,
-    message: null,
-    guns: [],
-    cardId: null,
-    titleId: null,
-  };
-  if (!puuid) {
-    return { ...empty, message: "プレイヤーIDが空です。" };
+): Promise<MatchLoadoutsResponse> {
+  const empty: MatchLoadoutsResponse = { ok: false, message: null, players: [] };
+  if (!matchId) {
+    return { ...empty, message: "試合IDがありません。" };
   }
   if (!isTauriRuntime()) {
     return {
@@ -147,19 +150,20 @@ export async function fetchPlayerLoadout(
     };
   }
 
-  const key = `${region}:${puuid.toLowerCase()}`;
-  const hit = loadoutCache.get(key);
-  if (hit && Date.now() - hit.at < LOADOUT_CACHE_TTL_MS) {
+  const key = `${matchId}:${phase}`;
+  const hit = matchLoadoutCache.get(key);
+  if (hit && Date.now() - hit.at < MATCH_LOADOUT_CACHE_TTL_MS) {
     return hit.value;
   }
 
   try {
-    const value = await invoke<PlayerLoadoutResponse>("fetch_player_loadout", {
-      puuid,
+    const value = await invoke<MatchLoadoutsResponse>("fetch_match_loadouts", {
+      matchId,
+      phase,
       regionFallback: region,
+      session: riotSessionPayload(),
     });
-    // Only cache successes so a closed client can recover on the next hover.
-    if (value.ok) loadoutCache.set(key, { at: Date.now(), value });
+    if (value.ok) matchLoadoutCache.set(key, { at: Date.now(), value });
     return value;
   } catch (err) {
     return {
