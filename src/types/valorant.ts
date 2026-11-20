@@ -543,6 +543,10 @@ export interface WeaponAsset {
   displayIcon?: string;
   /** Position in valorant-api's canonical weapon list (locker ordering). */
   order?: number;
+  /** EEquippableCategory (Sidearm / SMG / Shotgun / Rifle / Sniper / Heavy / Melee). */
+  category?: string;
+  /** Shop price, used to order weapons inside a category like the in-game locker. */
+  cost?: number;
 }
 
 export interface HenrikLeaderboardV3Threshold {

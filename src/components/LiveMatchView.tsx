@@ -441,6 +441,21 @@ interface LockerAnchor {
 
 const LOCKER_WIDTH = 600;
 
+/** Column layout mirrored from VALORANT's collection screen. */
+const LOCKER_COLUMNS: Array<Array<{ title: string; category: string }>> = [
+  [{ title: "サイドアーム", category: "Sidearm" }],
+  [
+    { title: "サブマシンガン", category: "SMG" },
+    { title: "ショットガン", category: "Shotgun" },
+    { title: "近接武器", category: "Melee" },
+  ],
+  [{ title: "ライフル", category: "Rifle" }],
+  [
+    { title: "スナイパー", category: "Sniper" },
+    { title: "マシンガン", category: "Heavy" },
+  ],
+];
+
 /** Image with a weapon-render fallback for skins whose art is missing. */
 function LockerImage({
   primary,
@@ -500,6 +515,7 @@ function PlayerLockerTooltip({
   const [loadouts, setLoadouts] = useState<MatchLoadoutsResponse | null>(null);
   const [loadoutError, setLoadoutError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<StoreCatalog | null>(null);
+  const [cardFailed, setCardFailed] = useState(false);
 
   useEffect(() => {
     if (!matchId || !phase) {
@@ -547,21 +563,40 @@ function PlayerLockerTooltip({
     anchor.placement === "below"
       ? window.innerHeight - anchor.bottom - 20
       : anchor.top - 20;
-  const maxHeight = Math.max(180, Math.min(520, available));
-  const columns = width >= 560 ? 5 : width >= 460 ? 4 : 3;
+  const maxHeight = Math.max(180, Math.min(540, available));
   const card = buildPlayerCardUrls(anchor.player.cardId || undefined);
   const loading = !loadoutError && loadouts === null;
   const playerLoadout =
     loadouts?.players.find(
       (player) => player.puuid === anchor.player.puuid.toLowerCase(),
     ) ?? null;
-  const weapons = (playerLoadout?.weapons ?? [])
-    .slice()
-    .sort((a, b) => {
-      const orderA = assets.weaponsById[a.weaponId.toLowerCase()]?.order ?? 999;
-      const orderB = assets.weaponsById[b.weaponId.toLowerCase()]?.order ?? 999;
-      return orderA - orderB;
-    });
+
+  // Group the equipped guns exactly like VALORANT's collection screen:
+  // sidearms | SMG/shotgun/melee | rifles | snipers/machine guns.
+  const weaponEntries = (playerLoadout?.weapons ?? []).map((weaponEntry) => {
+    const weapon = assets.weaponsById[weaponEntry.weaponId.toLowerCase()];
+    const skin = catalog
+      ? weaponEntry.items
+          .map(
+            (item) =>
+              resolveStoreSkin(catalog, item.id) ??
+              resolveStoreSkin(catalog, item.typeId),
+          )
+          .find(Boolean)
+      : undefined;
+    const category = weapon?.category?.split("::").pop() ?? "";
+    return { weaponEntry, weapon, skin, category };
+  });
+  const lockerColumns = LOCKER_COLUMNS.map((sections) =>
+    sections
+      .map((section) => ({
+        title: section.title,
+        weapons: weaponEntries
+          .filter((entry) => entry.category === section.category)
+          .sort((a, b) => (a.weapon?.cost ?? 0) - (b.weapon?.cost ?? 0)),
+      }))
+      .filter((section) => section.weapons.length > 0),
+  ).filter((column) => column.length > 0);
 
   return createPortal(
     <div
@@ -570,11 +605,12 @@ function PlayerLockerTooltip({
     >
       <div className="flex max-h-full flex-col overflow-hidden rounded-[12px] border border-[rgba(255,255,255,0.1)] bg-[#0a0a0a] shadow-[0_24px_64px_rgba(0,0,0,0.75)]">
         <div className="relative h-[68px] shrink-0 border-b border-[rgba(255,255,255,0.07)] bg-black">
-          {card.wide && (
+          {card.wide && !cardFailed && (
             <img
               src={card.wide}
               alt=""
               className="absolute inset-0 h-full w-full object-cover opacity-30"
+              onError={() => setCardFailed(true)}
             />
           )}
           <div className="absolute inset-0 bg-gradient-to-r from-black/85 via-black/45 to-black/10" />
@@ -603,57 +639,59 @@ function PlayerLockerTooltip({
             <p className="px-1 py-3 text-[11px] leading-relaxed text-[#8f8f8f]">
               {loadoutError}
             </p>
-          ) : weapons.length === 0 ? (
+          ) : lockerColumns.length === 0 ? (
             <p className="px-1 py-3 text-[11px] text-[#8f8f8f]">
               装備情報が見つかりませんでした。
             </p>
           ) : (
             <div
-              className="grid min-h-0 flex-1 gap-2 overflow-y-auto pr-1"
-              style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+              className="grid min-h-0 flex-1 gap-3 overflow-y-auto pr-1"
+              style={{
+                gridTemplateColumns: `repeat(${lockerColumns.length}, minmax(0, 1fr))`,
+              }}
             >
-              {weapons.map((weaponEntry) => {
-                const weapon =
-                  assets.weaponsById[weaponEntry.weaponId.toLowerCase()];
-                const skin = catalog
-                  ? weaponEntry.items
-                      .map(
-                        (item) =>
-                          resolveStoreSkin(catalog, item.id) ??
-                          resolveStoreSkin(catalog, item.typeId),
-                      )
-                      .find(Boolean)
-                  : undefined;
-                const skinName = skin?.name ?? "デフォルト";
-                const weaponName = weapon?.displayName ?? "";
-                const icon = skin?.icon || weapon?.displayIcon || "";
-                return (
-                  <div
-                    key={weaponEntry.weaponId}
-                    className="rounded-[8px] border border-[rgba(255,255,255,0.06)] bg-black/60 p-2"
-                  >
-                    <div className="flex h-14 items-center justify-center">
-                      <LockerImage
-                        primary={icon}
-                        fallback={weapon?.displayIcon}
-                        className="max-h-14 max-w-full object-contain"
-                      />
+              {lockerColumns.map((column, columnIndex) => (
+                <div key={columnIndex} className="flex flex-col gap-2.5">
+                  {column.map((section) => (
+                    <div key={section.title} className="flex flex-col gap-1.5">
+                      <p className="text-[10px] tracking-wide text-[#8f8f8f]">
+                        {section.title}
+                      </p>
+                      {section.weapons.map(({ weaponEntry, weapon, skin }) => {
+                        const skinName = skin?.name ?? "デフォルト";
+                        const weaponName = weapon?.displayName ?? "";
+                        const icon = skin?.icon || weapon?.displayIcon || "";
+                        return (
+                          <div
+                            key={weaponEntry.weaponId}
+                            className="overflow-hidden rounded-[3px] border border-white/10 bg-gradient-to-b from-[#1a1a1a] to-[#0f0f0f] p-1.5"
+                          >
+                            <div className="flex h-9 items-center justify-center">
+                              <LockerImage
+                                primary={icon}
+                                fallback={weapon?.displayIcon}
+                                className="max-h-9 max-w-full object-contain"
+                              />
+                            </div>
+                            <p
+                              className="mt-1 truncate text-[10px] text-[#ededed]"
+                              title={weaponName}
+                            >
+                              {weaponName || "武器"}
+                            </p>
+                            <p
+                              className="truncate text-[8px] text-[#5c5c5c]"
+                              title={skinName}
+                            >
+                              {skinName}
+                            </p>
+                          </div>
+                        );
+                      })}
                     </div>
-                    <p
-                      className="mt-1.5 truncate text-[10px] text-[#ededed]"
-                      title={skinName}
-                    >
-                      {skinName}
-                    </p>
-                    <p
-                      className="truncate text-[9px] text-[#5c5c5c]"
-                      title={weaponName}
-                    >
-                      {weaponName || "武器"}
-                    </p>
-                  </div>
-                );
-              })}
+                  ))}
+                </div>
+              ))}
             </div>
           )}
         </div>

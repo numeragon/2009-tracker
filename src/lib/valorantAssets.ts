@@ -6,7 +6,7 @@ import type {
 } from "../types/valorant";
 import { getCachedData, setCachedData } from "./storage";
 
-const ASSETS_CACHE_KEY = "valorant_api_assets_ja_v3";
+const ASSETS_CACHE_KEY = "valorant_api_assets_ja_v4";
 const ASSETS_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const EMPTY_CATALOG: ValorantAssetsCatalog = {
@@ -89,6 +89,8 @@ export async function loadValorantAssets(): Promise<ValorantAssetsCatalog> {
                 uuid: string;
                 displayName: string;
                 displayIcon?: string;
+                category?: string;
+                shopData?: { cost?: number };
               }>>,
             )
             .catch(() => ({ status: 200, data: [] })),
@@ -165,6 +167,8 @@ export async function loadValorantAssets(): Promise<ValorantAssetsCatalog> {
           displayName: w.displayName,
           displayIcon: w.displayIcon,
           order: index,
+          category: w.category,
+          cost: w.shopData?.cost,
         };
       }
 
@@ -220,6 +224,11 @@ export function resolveTierAsset(
   return catalog.tiersById[tierId];
 }
 
+function isZeroCardId(id: string): boolean {
+  const compact = id.replace(/-/g, "");
+  return compact.length === 0 || /^0+$/.test(compact);
+}
+
 export function buildPlayerCardUrls(
   card: string | { id?: string; small?: string; large?: string; wide?: string } | undefined,
 ): {
@@ -230,15 +239,16 @@ export function buildPlayerCardUrls(
 } {
   if (card && typeof card === "object") {
     const id = card.id ?? "";
+    const valid = id && !isZeroCardId(id);
     return {
-      cardId: id,
-      small: card.small ?? (id ? `https://media.valorant-api.com/playercards/${id}/smallart.png` : ""),
-      wide: card.wide ?? (id ? `https://media.valorant-api.com/playercards/${id}/wideart.png` : ""),
-      large: card.large ?? (id ? `https://media.valorant-api.com/playercards/${id}/largeart.png` : ""),
+      cardId: valid ? id : "",
+      small: card.small ?? (valid ? `https://media.valorant-api.com/playercards/${id}/smallart.png` : ""),
+      wide: card.wide ?? (valid ? `https://media.valorant-api.com/playercards/${id}/wideart.png` : ""),
+      large: card.large ?? (valid ? `https://media.valorant-api.com/playercards/${id}/largeart.png` : ""),
     };
   }
   const id = (card ?? "").trim();
-  if (!id) {
+  if (!id || isZeroCardId(id)) {
     return { cardId: "", small: "", wide: "", large: "" };
   }
   return {
