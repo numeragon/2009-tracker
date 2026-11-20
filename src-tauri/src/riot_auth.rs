@@ -249,7 +249,7 @@ async fn finish_login(access_token: &str) -> RiotLoginResult {
 }
 
 #[tauri::command]
-pub async fn riot_login(app: AppHandle) -> Result<(), String> {
+pub async fn riot_login(app: AppHandle, fresh: Option<bool>) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window(RIOT_LOGIN_LABEL) {
         let _ = existing.set_focus();
         return Ok(());
@@ -263,11 +263,19 @@ pub async fn riot_login(app: AppHandle) -> Result<(), String> {
     let completed_nav = completed.clone();
     let app_nav = app.clone();
 
-    let window = WebviewWindowBuilder::new(&app, RIOT_LOGIN_LABEL, WebviewUrl::External(url))
-        .title("Riot ログイン")
-        .inner_size(480.0, 780.0)
-        .min_inner_size(380.0, 560.0)
-        .center()
+    let mut builder =
+        WebviewWindowBuilder::new(&app, RIOT_LOGIN_LABEL, WebviewUrl::External(url))
+            .title("Riot ログイン")
+            .inner_size(480.0, 780.0)
+            .min_inner_size(380.0, 560.0)
+            .center();
+    // Adding another account must not reuse the previous account's cookies,
+    // otherwise Riot would silently sign the same user back in.
+    if fresh.unwrap_or(false) {
+        builder = builder.incognito(true);
+    }
+
+    let window = builder
         .on_navigation(move |url| {
             if let Some(token) = extract_access_token(url) {
                 if !completed_nav.swap(true, Ordering::SeqCst) {

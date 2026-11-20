@@ -78,45 +78,139 @@ export async function fetchStorefrontFromClient(
 
 /* ---------- Riot account login (embedded Riot page) ---------- */
 
+const RIOT_SESSIONS_KEY = "vt:riot_sessions_v1";
+const RIOT_ACTIVE_KEY = "vt:riot_active_puuid_v1";
+/** Legacy single-account key, migrated on first read. */
 const RIOT_SESSION_KEY = "vt:riot_session_v1";
 
-export function loadRiotSession(): RiotSession | null {
-  try {
-    const raw = localStorage.getItem(RIOT_SESSION_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<RiotSession>;
-    if (!parsed.accessToken || !parsed.puuid) return null;
-    return {
-      puuid: parsed.puuid,
-      gameName: parsed.gameName ?? "",
-      tagLine: parsed.tagLine ?? "",
-      accessToken: parsed.accessToken,
-      entitlements: parsed.entitlements ?? "",
-      region: parsed.region ?? "",
-      obtainedAt: parsed.obtainedAt ?? 0,
-    };
-  } catch {
-    return null;
-  }
+export interface RiotAccountStore {
+  sessions: RiotSession[];
+  activePuuid: string | null;
 }
 
-export function saveRiotSession(session: RiotSession | null) {
+function normalizeRiotSession(value: unknown): RiotSession | null {
+  const parsed = value as Partial<RiotSession> | null;
+  if (!parsed || !parsed.accessToken || !parsed.puuid) return null;
+  return {
+    puuid: parsed.puuid,
+    gameName: parsed.gameName ?? "",
+    tagLine: parsed.tagLine ?? "",
+    accessToken: parsed.accessToken,
+    entitlements: parsed.entitlements ?? "",
+    region: parsed.region ?? "",
+    obtainedAt: parsed.obtainedAt ?? 0,
+    loginMode: parsed.loginMode === "fresh" ? "fresh" : "persistent",
+  };
+}
+
+function readRiotSessions(): RiotSession[] {
   try {
-    if (session) {
-      localStorage.setItem(RIOT_SESSION_KEY, JSON.stringify(session));
-    } else {
-      localStorage.removeItem(RIOT_SESSION_KEY);
+    const raw = localStorage.getItem(RIOT_SESSIONS_KEY);
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map(normalizeRiotSession)
+          .filter((session): session is RiotSession => session !== null);
+      }
     }
+  } catch {
+    // Ignore broken storage
+  }
+
+  // Migrate the session saved by versions before multi-account support.
+  try {
+    const legacy = normalizeRiotSession(
+      JSON.parse(localStorage.getItem(RIOT_SESSION_KEY) ?? "null"),
+    );
+    if (legacy) return [legacy];
+  } catch {
+    // Ignore
+  }
+  return [];
+}
+
+function writeRiotStore(sessions: RiotSession[], activePuuid: string | null) {
+  try {
+    if (sessions.length > 0) {
+      localStorage.setItem(RIOT_SESSIONS_KEY, JSON.stringify(sessions));
+      localStorage.setItem(RIOT_ACTIVE_KEY, activePuuid ?? sessions[0].puuid);
+    } else {
+      localStorage.removeItem(RIOT_SESSIONS_KEY);
+      localStorage.removeItem(RIOT_ACTIVE_KEY);
+    }
+    localStorage.removeItem(RIOT_SESSION_KEY);
   } catch {
     // Ignore storage errors
   }
 }
 
-export async function startRiotLogin(): Promise<void> {
+export function loadRiotAccountStore(): RiotAccountStore {
+  const sessions = readRiotSessions();
+  let activePuuid: string | null = null;
+  try {
+    activePuuid = localStorage.getItem(RIOT_ACTIVE_KEY);
+  } catch {
+    // Ignore
+  }
+  if (!activePuuid || !sessions.some((session) => session.puuid === activePuuid)) {
+    activePuuid = sessions[0]?.puuid ?? null;
+  }
+  return { sessions, activePuuid };
+}
+
+export function loadRiotSessions(): RiotSession[] {
+  return loadRiotAccountStore().sessions;
+}
+
+/** The account currently selected in the shop (also used by the crosshair tab). */
+export function loadRiotSession(): RiotSession | null {
+  const { sessions, activePuuid } = loadRiotAccountStore();
+  return sessions.find((session) => session.puuid === activePuuid) ?? sessions[0] ?? null;
+}
+
+/**
+ * Adds or refreshes an account and makes it active. Passing `null` signs out of
+ * every account (kept for the old single-account behaviour).
+ */
+export function saveRiotSession(session: RiotSession | null): RiotAccountStore {
+  if (!session) {
+    writeRiotStore([], null);
+    return { sessions: [], activePuuid: null };
+  }
+  const { sessions } = loadRiotAccountStore();
+  const next = [session, ...sessions.filter((item) => item.puuid !== session.puuid)];
+  const store = { sessions: next, activePuuid: session.puuid };
+  writeRiotStore(next, store.activePuuid);
+  return store;
+}
+
+export function setActiveRiotSession(puuid: string): RiotAccountStore {
+  const store = loadRiotAccountStore();
+  if (!store.sessions.some((session) => session.puuid === puuid)) return store;
+  writeRiotStore(store.sessions, puuid);
+  return { sessions: store.sessions, activePuuid: puuid };
+}
+
+export function removeRiotSession(puuid: string): RiotAccountStore {
+  const store = loadRiotAccountStore();
+  const sessions = store.sessions.filter((session) => session.puuid !== puuid);
+  const activePuuid = sessions.some((session) => session.puuid === store.activePuuid)
+    ? store.activePuuid
+    : (sessions[0]?.puuid ?? null);
+  writeRiotStore(sessions, activePuuid);
+  return { sessions, activePuuid };
+}
+
+export function clearRiotSessions(): void {
+  writeRiotStore([], null);
+}
+
+export async function startRiotLogin(fresh = false): Promise<void> {
   if (!isTauriRuntime()) {
     throw new Error("Riotログインはデスクトップアプリ（.exe）でのみ利用可能です。");
   }
-  await invoke("riot_login");
+  await invoke("riot_login", { fresh });
 }
 
 export function onRiotLoginResult(

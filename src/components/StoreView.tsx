@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  Check,
+  ChevronDown,
   Clock,
   Loader2,
   LogIn,
@@ -7,8 +9,10 @@ import {
   RefreshCw,
   ShoppingBag,
   Sparkles,
+  UserPlus,
   UserRound,
   Wallet,
+  X,
 } from "lucide-react";
 import type {
   Region,
@@ -20,11 +24,14 @@ import {
   clearRiotSessionInBackend,
   fetchLastRiotSession,
   fetchStorefrontFromClient,
-  loadRiotSession,
+  loadRiotAccountStore,
   onRiotLoginResult,
   parseStorefront,
+  removeRiotSession,
   saveRiotSession,
+  setActiveRiotSession,
   startRiotLogin,
+  type RiotAccountStore,
 } from "../lib/localClientApi";
 import { loadStoreCatalog, resolveStoreSkin } from "../lib/storeCatalog";
 
@@ -57,7 +64,19 @@ function priceRemaining(fetchedAt: number, seconds: number, now: number): number
 }
 
 export function StoreView({ defaultRegion }: StoreViewProps) {
-  const [session, setSession] = useState<RiotSession | null>(() => loadRiotSession());
+  const [accounts, setAccounts] = useState<RiotAccountStore>(() => loadRiotAccountStore());
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
+  const pendingLoginMode = useRef<"persistent" | "fresh">("persistent");
+
+  const session: RiotSession | null =
+    accounts.sessions.find((item) => item.puuid === accounts.activePuuid) ??
+    accounts.sessions[0] ??
+    null;
+  const applyStore = useCallback((store: RiotAccountStore) => {
+    setAccounts(store);
+  }, []);
+
   const [loginPending, setLoginPending] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [authExpired, setAuthExpired] = useState(false);
@@ -76,6 +95,17 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!accountMenuRef.current?.contains(event.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [accountMenuOpen]);
+
   // Listen for the result of the embedded Riot login window.
   useEffect(() => {
     let disposed = false;
@@ -85,8 +115,11 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
       if (disposed) return;
       setLoginPending(false);
       if (result.status === "ok" && result.session) {
-        saveRiotSession(result.session);
-        setSession(result.session);
+        const store = saveRiotSession({
+          ...result.session,
+          loginMode: pendingLoginMode.current,
+        });
+        applyStore(store);
         setAuthExpired(false);
         setError(null);
         setLoginError(null);
@@ -107,29 +140,29 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
       disposed = true;
       unlisten?.();
     };
-  }, []);
+  }, [applyStore]);
 
   // If the page missed the login event (e.g. the tab changed while the Riot
   // window was open), recover the in-memory session from the Rust side.
   useEffect(() => {
-    if (session) return;
+    if (accounts.sessions.length > 0) return;
     let cancelled = false;
     void fetchLastRiotSession().then((restored) => {
       if (!cancelled && restored) {
-        saveRiotSession(restored);
-        setSession(restored);
+        applyStore(saveRiotSession(restored));
       }
     });
     return () => {
       cancelled = true;
     };
-  }, [session]);
+  }, [accounts.sessions.length, applyStore]);
 
-  const beginLogin = useCallback(async () => {
+  const beginLogin = useCallback(async (fresh = false) => {
+    pendingLoginMode.current = fresh ? "fresh" : "persistent";
     setLoginError(null);
     setLoginPending(true);
     try {
-      await startRiotLogin();
+      await startRiotLogin(fresh);
     } catch (err) {
       setLoginPending(false);
       setLoginError(
@@ -138,15 +171,43 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
     }
   }, []);
 
-  const logout = useCallback(() => {
-    saveRiotSession(null);
-    void clearRiotSessionInBackend();
-    setSession(null);
+  const resetStoreData = useCallback(() => {
     setData(null);
     setError(null);
     setAuthExpired(false);
     setLoginError(null);
   }, []);
+
+  const logout = useCallback(() => {
+    if (!session) return;
+    const store = removeRiotSession(session.puuid);
+    applyStore(store);
+    if (store.sessions.length === 0) void clearRiotSessionInBackend();
+    resetStoreData();
+    setAccountMenuOpen(false);
+  }, [applyStore, resetStoreData, session]);
+
+  const switchAccount = useCallback(
+    (puuid: string) => {
+      applyStore(setActiveRiotSession(puuid));
+      resetStoreData();
+      setAccountMenuOpen(false);
+    },
+    [applyStore, resetStoreData],
+  );
+
+  const removeAccount = useCallback(
+    (puuid: string) => {
+      const store = removeRiotSession(puuid);
+      applyStore(store);
+      if (store.sessions.length === 0) {
+        void clearRiotSessionInBackend();
+        setAccountMenuOpen(false);
+      }
+      resetStoreData();
+    },
+    [applyStore, resetStoreData],
+  );
 
   const refresh = useCallback(async () => {
     if (!session) return;
@@ -239,23 +300,108 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
             </h1>
           </div>
           <p className="text-xs text-[#8f8f8f] mt-1.5">
-            Riotアカウントでログインして、ゲームを起動していなくてもデイリーストア・ナイトマーケット・バンドルを確認できます。
+            Riotアカウントでログインして、ゲームを起動していなくてもデイリーストア・ナイトマーケット・バンドルを確認できます。複数のアカウントを追加して切り替えられます。
           </p>
         </div>
 
         <div className="flex items-center gap-2.5 self-start sm:self-center shrink-0">
           {session && (
-            <div className="flex items-center gap-2 h-9 px-3 rounded-[12px] border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a] text-[11px] max-w-[220px]">
-              <UserRound className="w-3.5 h-3.5 text-[#5c5c5c] shrink-0" />
-              <span className="text-[#ededed] truncate">{accountName}</span>
-              <button
-                type="button"
-                title="ログアウト"
-                onClick={logout}
-                className="p-0.5 rounded text-[#5c5c5c] hover:text-[#ededed] cursor-pointer shrink-0"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-              </button>
+            <div ref={accountMenuRef} className="relative">
+              <div className="flex items-center gap-1 h-9 pl-3 pr-1.5 rounded-[12px] border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a] text-[11px] max-w-[240px]">
+                <button
+                  type="button"
+                  onClick={() => setAccountMenuOpen((open) => !open)}
+                  className="flex items-center gap-2 min-w-0 cursor-pointer"
+                  aria-haspopup="menu"
+                  aria-expanded={accountMenuOpen}
+                  title="アカウントを切り替え"
+                >
+                  <UserRound className="w-3.5 h-3.5 text-[#5c5c5c] shrink-0" />
+                  <span className="text-[#ededed] truncate">{accountName}</span>
+                  <ChevronDown
+                    className={`w-3 h-3 text-[#5c5c5c] shrink-0 transition-transform duration-150 ${
+                      accountMenuOpen ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
+                <button
+                  type="button"
+                  title="このアカウントからログアウト"
+                  onClick={logout}
+                  className="p-1 rounded text-[#5c5c5c] hover:text-[#ededed] cursor-pointer shrink-0"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              {accountMenuOpen && (
+                <div
+                  role="menu"
+                  className="absolute right-0 top-full mt-1.5 w-64 rounded-[12px] border border-[rgba(255,255,255,0.09)] bg-[#0a0a0a] p-1.5 shadow-[0_16px_48px_rgba(0,0,0,0.65)] z-30 vt-animate-in"
+                >
+                  <p className="px-2 py-1 text-[10px] tracking-wide text-[#5c5c5c]">
+                    アカウント
+                  </p>
+                  {accounts.sessions.map((account) => {
+                    const active = account.puuid === session.puuid;
+                    const name =
+                      `${account.gameName}${
+                        account.tagLine ? `#${account.tagLine}` : ""
+                      }` || "Riotアカウント";
+                    return (
+                      <div
+                        key={account.puuid}
+                        className={`flex items-center gap-1 rounded-[8px] pr-0.5 ${
+                          active ? "bg-white/[0.06]" : "hover:bg-white/[0.03]"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => switchAccount(account.puuid)}
+                          className="flex-1 flex items-center gap-2 min-w-0 h-9 px-2 text-left cursor-pointer"
+                        >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                              active ? "bg-[#ededed]" : "bg-[#3a3a3a]"
+                            }`}
+                          />
+                          <span
+                            className={`text-[11px] truncate ${
+                              active ? "text-[#ededed]" : "text-[#8f8f8f]"
+                            }`}
+                          >
+                            {name}
+                          </span>
+                          {active && (
+                            <Check className="w-3 h-3 text-[#8f8f8f] ml-auto shrink-0" />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          title="このアカウントを削除"
+                          onClick={() => removeAccount(account.puuid)}
+                          className="p-1 rounded text-[#5c5c5c] hover:text-[#ededed] cursor-pointer shrink-0"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    );
+                  })}
+                  <div className="my-1 border-t border-[rgba(255,255,255,0.06)]" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAccountMenuOpen(false);
+                      void beginLogin(true);
+                    }}
+                    disabled={loginPending}
+                    className="w-full flex items-center gap-2 h-9 px-2 rounded-[8px] text-[11px] text-[#ededed] hover:bg-white/[0.04] disabled:opacity-50 cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5 text-[#8f8f8f]" />
+                    別のアカウントを追加
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -348,7 +494,7 @@ export function StoreView({ defaultRegion }: StoreViewProps) {
           )}
           <button
             type="button"
-            onClick={() => void beginLogin()}
+            onClick={() => void beginLogin(session.loginMode === "fresh")}
             disabled={loginPending}
             className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium rounded-[12px] bg-[#ededed] text-black hover:bg-white transition-colors duration-150 disabled:opacity-50 cursor-pointer"
           >

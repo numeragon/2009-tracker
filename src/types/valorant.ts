@@ -581,6 +581,11 @@ export interface RiotSession {
   entitlements: string;
   region: string;
   obtainedAt: number;
+  /**
+   * "persistent" reuses Riot's saved login (default). "fresh" came from the
+   * incognito window used to add a second account.
+   */
+  loginMode?: "persistent" | "fresh";
 }
 
 export interface RiotLoginResult {

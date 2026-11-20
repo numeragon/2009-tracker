@@ -458,6 +458,97 @@ fn storefront_error(
     }
 }
 
+/// The account's shard is not always known up front (e.g. a Riot login made
+/// without the geo lookup, or a new region). A wrong shard answers 404, so try
+/// the detected shard first and then the remaining PD shards.
+fn storefront_shards(primary: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let primary = primary.trim().to_lowercase();
+    if !primary.is_empty() {
+        out.push(primary);
+    }
+    for shard in ["na", "eu", "ap", "kr"] {
+        if !out.iter().any(|s| s == shard) {
+            out.push(shard.to_string());
+        }
+    }
+    out
+}
+
+enum StorefrontEndpointError {
+    Unauthorized,
+    Retry(String),
+    Fatal(String),
+}
+
+/// Riot moved the storefront endpoint from `GET /store/v2` to
+/// `POST /store/v3` (the v2 route answers 404 now). Try the current route
+/// first, then the variants older/newer clients accept.
+async fn fetch_storefront_document(
+    client: &reqwest::Client,
+    shard: &str,
+    puuid: &str,
+    headers: &HeaderMap,
+) -> Result<Value, StorefrontEndpointError> {
+    let base = format!("https://pd.{shard}.a.pvp.net");
+    let attempts: [(reqwest::Method, String); 3] = [
+        (
+            reqwest::Method::POST,
+            format!("{base}/store/v3/storefront/{puuid}"),
+        ),
+        (
+            reqwest::Method::GET,
+            format!("{base}/store/v3/storefront/{puuid}"),
+        ),
+        (
+            reqwest::Method::GET,
+            format!("{base}/store/v2/storefront/{puuid}"),
+        ),
+    ];
+
+    let mut last_error = String::from("HTTP 404");
+
+    for (method, url) in attempts {
+        let mut request = client.request(method.clone(), &url).headers(headers.clone());
+        if method == reqwest::Method::POST {
+            request = request.json(&serde_json::json!({}));
+        }
+
+        let resp = match request.send().await {
+            Ok(resp) => resp,
+            Err(e) => {
+                last_error = e.to_string();
+                continue;
+            }
+        };
+
+        if resp.status().is_success() {
+            return resp
+                .json::<Value>()
+                .await
+                .map_err(|e| StorefrontEndpointError::Fatal(format!(
+                    "ストア情報の解析に失敗しました: {e}"
+                )));
+        }
+
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(StorefrontEndpointError::Unauthorized);
+        }
+
+        let code = resp.status().as_u16();
+        if resp.status() == reqwest::StatusCode::NOT_FOUND
+            || resp.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED
+        {
+            last_error = format!("HTTP {code}");
+            continue;
+        }
+
+        return Err(StorefrontEndpointError::Fatal(format!("HTTP {code}")));
+    }
+
+    Err(StorefrontEndpointError::Retry(last_error))
+}
+
 #[tauri::command]
 pub async fn fetch_storefront(
     region_fallback: String,
@@ -556,44 +647,51 @@ pub async fn fetch_storefront(
         HeaderValue::from_static(CLIENT_PLATFORM_B64),
     );
 
-    let store_url = format!("https://pd.{shard}.a.pvp.net/store/v2/storefront/{puuid}");
-    let storefront = match remote_client
-        .get(&store_url)
-        .headers(headers.clone())
-        .send()
-        .await
-    {
-        Ok(r) if r.status().is_success() => r.json::<Value>().await.ok(),
-        Ok(r) => {
-            let expired =
-                auth_source == "session" && r.status() == reqwest::StatusCode::UNAUTHORIZED;
-            let message = if expired {
-                "Riotセッションの有効期限が切れました。再ログインしてください。".to_string()
-            } else {
-                format!(
-                    "ストア情報の取得に失敗しました (HTTP {})。",
-                    r.status().as_u16()
-                )
-            };
-            return Ok(storefront_error(
-                message,
-                Some(puuid),
-                Some(shard),
-                Some(glz_region),
-                Some(auth_source),
-                expired,
-            ));
+    let storefront_result = {
+        let mut found: Option<Value> = None;
+        let mut chosen_shard = shard.clone();
+        let mut expired = false;
+        let mut last_detail = String::from("HTTP 404");
+
+        for candidate in storefront_shards(&shard) {
+            match fetch_storefront_document(&remote_client, &candidate, &puuid, &headers).await {
+                Ok(json) => {
+                    found = Some(json);
+                    chosen_shard = candidate;
+                    break;
+                }
+                Err(StorefrontEndpointError::Unauthorized) => {
+                    expired = true;
+                    break;
+                }
+                Err(StorefrontEndpointError::Retry(detail)) => {
+                    last_detail = detail;
+                }
+                Err(StorefrontEndpointError::Fatal(detail)) => {
+                    last_detail = detail;
+                    break;
+                }
+            }
         }
-        Err(e) => {
-            return Ok(storefront_error(
-                format!("ストア情報の取得に失敗しました: {e}"),
-                Some(puuid),
-                Some(shard),
-                Some(glz_region),
-                Some(auth_source),
-                false,
-            ));
-        }
+
+        (found, chosen_shard, expired, last_detail)
+    };
+    let (storefront, shard, expired, last_detail) = storefront_result;
+
+    let Some(storefront) = storefront else {
+        let message = if expired {
+            "Riotセッションの有効期限が切れました。再ログインしてください。".to_string()
+        } else {
+            format!("ストア情報の取得に失敗しました（{last_detail}）。")
+        };
+        return Ok(storefront_error(
+            message,
+            Some(puuid),
+            Some(shard),
+            Some(glz_region),
+            Some(auth_source),
+            expired,
+        ));
     };
 
     let wallet_url = format!("https://pd.{shard}.a.pvp.net/store/v1/wallet/{puuid}");
@@ -608,16 +706,12 @@ pub async fn fetch_storefront(
     };
 
     Ok(StorefrontFetchResponse {
-        ok: storefront.is_some(),
-        message: if storefront.is_some() {
-            None
-        } else {
-            Some("ストア情報を取得できませんでした。".to_string())
-        },
+        ok: true,
+        message: None,
         puuid: Some(puuid),
         shard: Some(shard),
         region: Some(glz_region),
-        storefront,
+        storefront: Some(storefront),
         wallet,
         fetched_at: now_millis(),
         auth_source: Some(auth_source.to_string()),
@@ -664,5 +758,13 @@ mod tests {
     #[test]
     fn rejects_empty_payload() {
         assert!(decode_preference_payload(&serde_json::json!({ "data": "" })).is_none());
+    }
+
+    #[test]
+    fn shard_candidates_start_with_detected_shard() {
+        let shards = storefront_shards("ap");
+        assert_eq!(shards.first().map(String::as_str), Some("ap"));
+        assert_eq!(shards.len(), 4);
+        assert_eq!(storefront_shards("").len(), 4);
     }
 }
