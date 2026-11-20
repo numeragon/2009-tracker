@@ -4,6 +4,7 @@ import type {
   HenrikMmrV3Data,
   LiveMatchResponse,
   LivePlayerRankInfo,
+  PlayerLoadoutResponse,
   Region,
 } from "../types/valorant";
 import { getCachedData, sanitizeApiKey, setCachedData } from "./storage";
@@ -280,5 +281,56 @@ export async function fetchPlayerRankByPuuid(
     return info;
   } catch {
     return null;
+  }
+}
+
+const LOADOUT_CACHE_TTL_MS = 5 * 60 * 1000;
+const loadoutCache = new Map<
+  string,
+  { at: number; value: PlayerLoadoutResponse }
+>();
+
+/** Equipped skins for one player, fetched on demand when the name is hovered. */
+export async function fetchPlayerLoadout(
+  puuid: string,
+  region: Region,
+): Promise<PlayerLoadoutResponse> {
+  const empty: PlayerLoadoutResponse = {
+    ok: false,
+    message: null,
+    guns: [],
+    cardId: null,
+    titleId: null,
+  };
+  if (!puuid) {
+    return { ...empty, message: "プレイヤーIDが空です。" };
+  }
+  if (!isTauriRuntime()) {
+    return {
+      ...empty,
+      message: "ロッカーの取得はデスクトップアプリ（.exe）でのみ利用可能です。",
+    };
+  }
+
+  const key = `${region}:${puuid.toLowerCase()}`;
+  const hit = loadoutCache.get(key);
+  if (hit && Date.now() - hit.at < LOADOUT_CACHE_TTL_MS) {
+    return hit.value;
+  }
+
+  try {
+    const value = await invoke<PlayerLoadoutResponse>("fetch_player_loadout", {
+      puuid,
+      regionFallback: region,
+    });
+    // Only cache successes so a closed client can recover on the next hover.
+    if (value.ok) loadoutCache.set(key, { at: Date.now(), value });
+    return value;
+  } catch (err) {
+    return {
+      ...empty,
+      message:
+        err instanceof Error ? err.message : "ロッカーを取得できませんでした。",
+    };
   }
 }

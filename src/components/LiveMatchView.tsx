@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Bookmark,
   Check,
   Clock,
+  Loader2,
   Radio,
   RefreshCw,
   Server,
@@ -13,20 +15,25 @@ import type {
   LiveMatchPlayerRaw,
   LiveMatchResponse,
   LivePlayerRankInfo,
+  PlayerLoadoutResponse,
   Region,
+  StoreCatalog,
   ValorantAssetsCatalog,
 } from "../types/valorant";
 import {
   fetchLiveMatchFromClient,
+  fetchPlayerLoadout,
   fetchPlayerRankByPuuid,
   formatLiveModeLabel,
   normalizeRegion,
 } from "../lib/liveMatchApi";
 import {
+  buildPlayerCardUrls,
   resolveAgentAsset,
   resolveMapAsset,
   resolveTierAsset,
 } from "../lib/valorantAssets";
+import { loadStoreCatalog, resolveStoreSkin } from "../lib/storeCatalog";
 
 const SAVED_LIVE_TABS_KEY = "vt:saved_live_tabs_v1";
 const LAST_LIVE_CACHE_KEY = "vt:last_live_session_v1";
@@ -111,6 +118,13 @@ interface LiveTeamTableProps {
   isPregame: boolean;
   assets: ValorantAssetsCatalog;
   onSelectPlayer: (name: string, tag: string) => void;
+  onHoverPlayer?: (
+    player: LiveMatchPlayerRaw,
+    name: string,
+    tag: string,
+    element: HTMLElement,
+  ) => void;
+  onLeavePlayer?: () => void;
 }
 
 function LiveTeamTable({
@@ -122,6 +136,8 @@ function LiveTeamTable({
   isPregame,
   assets,
   onSelectPlayer,
+  onHoverPlayer,
+  onLeavePlayer,
 }: LiveTeamTableProps) {
   return (
     <section className="vt-panel overflow-hidden">
@@ -184,7 +200,18 @@ function LiveTeamTable({
                     p.isSelf ? "bg-white/[0.065]" : "hover:bg-white/[0.025]"
                   }`}
                 >
-                  <td className="py-3 pl-5 pr-3">
+                  <td
+                    className="py-3 pl-5 pr-3"
+                    onMouseEnter={(event) =>
+                      onHoverPlayer?.(
+                        p,
+                        displayName || "Player",
+                        displayTag,
+                        event.currentTarget,
+                      )
+                    }
+                    onMouseLeave={() => onLeavePlayer?.()}
+                  >
                     <div className="flex items-center gap-3">
                       <div
                         className={`w-0.5 h-7 rounded-full shrink-0 ${
@@ -205,7 +232,7 @@ function LiveTeamTable({
                         </div>
                       )}
 
-                      <div className="min-w-0">
+                      <div className="min-w-0" data-player-name>
                         <div className="flex items-center gap-1.5">
                           {canClickProfile ? (
                             <button
@@ -400,6 +427,170 @@ function LiveTeamTable({
   );
 }
 
+interface LockerAnchor {
+  player: LiveMatchPlayerRaw;
+  name: string;
+  tag: string;
+  left: number;
+  /** Viewport top of the hovered row. */
+  top: number;
+  /** Viewport bottom of the hovered row. */
+  bottom: number;
+  placement: "below" | "above";
+}
+
+const LOCKER_WIDTH = 430;
+
+/**
+ * Hover card that mirrors the in-game locker: the player's equipped skin for
+ * every gun, with the weapon name underneath.
+ */
+function PlayerLockerTooltip({
+  anchor,
+  region,
+  assets,
+}: {
+  anchor: LockerAnchor;
+  region: Region;
+  assets: ValorantAssetsCatalog;
+}) {
+  const [loadout, setLoadout] = useState<PlayerLoadoutResponse | null>(null);
+  const [catalog, setCatalog] = useState<StoreCatalog | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchPlayerLoadout(anchor.player.puuid, region).then((result) => {
+      if (!cancelled) setLoadout(result);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [anchor.player.puuid, region]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadStoreCatalog().then((loaded) => {
+      if (!cancelled) setCatalog(loaded);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const width = Math.max(300, Math.min(LOCKER_WIDTH, window.innerWidth - 24));
+  const left = Math.min(
+    Math.max(12, anchor.left),
+    Math.max(12, window.innerWidth - width - 12),
+  );
+  const vertical =
+    anchor.placement === "below"
+      ? { top: anchor.bottom + 8 }
+      : { bottom: window.innerHeight - anchor.top + 8 };
+  const available =
+    anchor.placement === "below"
+      ? window.innerHeight - anchor.bottom - 20
+      : anchor.top - 20;
+  const maxHeight = Math.max(180, Math.min(430, available));
+  const card = buildPlayerCardUrls(loadout?.cardId ?? undefined);
+
+  return createPortal(
+    <div
+      className="fixed z-[90] pointer-events-none vt-animate-in"
+      style={{ left, width, maxHeight, ...vertical }}
+    >
+      <div className="flex max-h-full flex-col overflow-hidden rounded-[12px] border border-[rgba(255,255,255,0.1)] bg-[#0a0a0a] shadow-[0_24px_64px_rgba(0,0,0,0.75)]">
+        <div className="relative h-[68px] shrink-0 border-b border-[rgba(255,255,255,0.07)] bg-black">
+          {card.wide && (
+            <img
+              src={card.wide}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover opacity-30"
+            />
+          )}
+          <div className="absolute inset-0 bg-gradient-to-r from-black/85 via-black/45 to-black/10" />
+          <div className="relative flex h-full flex-col justify-center px-4">
+            <p className="text-[9px] uppercase tracking-[0.24em] text-[#5c5c5c]">
+              Player Loadout
+            </p>
+            <p className="truncate text-[13px] font-medium text-[#ededed]">
+              {anchor.name}
+              {anchor.tag && (
+                <span className="ml-0.5 font-num font-normal text-[#8f8f8f]">
+                  #{anchor.tag}
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col p-3">
+          {!loadout ? (
+            <div className="flex h-24 items-center justify-center gap-2 text-[11px] text-[#8f8f8f]">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ロッカーを読み込み中…
+            </div>
+          ) : !loadout.ok ? (
+            <p className="px-1 py-3 text-[11px] leading-relaxed text-[#8f8f8f]">
+              {loadout.message ?? "ロッカーを取得できませんでした。"}
+            </p>
+          ) : loadout.guns.length === 0 ? (
+            <p className="px-1 py-3 text-[11px] text-[#8f8f8f]">
+              装備情報が見つかりませんでした。
+            </p>
+          ) : (
+            <div className="grid min-h-0 flex-1 grid-cols-3 gap-2 overflow-y-auto pr-1">
+              {loadout.guns.map((gun) => {
+                const weapon = assets.weaponsById[gun.weaponId.toLowerCase()];
+                const skin = catalog
+                  ? resolveStoreSkin(
+                      catalog,
+                      gun.skinLevelId ?? gun.skinId ?? "",
+                    )
+                  : undefined;
+                const skinName = skin?.name ?? "デフォルト";
+                const weaponName = weapon?.displayName ?? "";
+                const icon = skin?.icon || weapon?.displayIcon || "";
+                return (
+                  <div
+                    key={gun.weaponId}
+                    className="rounded-[8px] border border-[rgba(255,255,255,0.06)] bg-black/60 p-2"
+                  >
+                    <div className="flex h-14 items-center justify-center">
+                      {icon ? (
+                        <img
+                          src={icon}
+                          alt=""
+                          loading="lazy"
+                          className="max-h-14 max-w-full object-contain"
+                        />
+                      ) : (
+                        <span className="text-[10px] text-[#3a3a3a]">—</span>
+                      )}
+                    </div>
+                    <p
+                      className="mt-1.5 truncate text-[10px] text-[#ededed]"
+                      title={skinName}
+                    >
+                      {skinName}
+                    </p>
+                    <p
+                      className="truncate text-[9px] text-[#5c5c5c]"
+                      title={weaponName}
+                    >
+                      {weaponName || "武器"}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 interface LiveMatchViewProps {
   defaultRegion: Region;
   apiKey: string;
@@ -435,6 +626,56 @@ export function LiveMatchView({
   const [isRanksLoading, setIsRanksLoading] = useState(false);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [lockerAnchor, setLockerAnchor] = useState<LockerAnchor | null>(null);
+
+  const lockerHideTimer = useRef<number | null>(null);
+  const showLocker = useCallback(
+    (
+      player: LiveMatchPlayerRaw,
+      name: string,
+      tag: string,
+      element: HTMLElement,
+    ) => {
+      if (lockerHideTimer.current !== null) {
+        window.clearTimeout(lockerHideTimer.current);
+        lockerHideTimer.current = null;
+      }
+      const rect = (
+        element.querySelector<HTMLElement>("[data-player-name]") ?? element
+      ).getBoundingClientRect();
+      const spaceBelow = window.innerHeight - rect.bottom - 20;
+      const spaceAbove = rect.top - 20;
+      const placement: "below" | "above" =
+        spaceBelow >= 360 || spaceBelow >= spaceAbove ? "below" : "above";
+      setLockerAnchor({
+        player,
+        name,
+        tag,
+        left: rect.left,
+        top: rect.top,
+        bottom: rect.bottom,
+        placement,
+      });
+    },
+    [],
+  );
+  const hideLocker = useCallback(() => {
+    if (lockerHideTimer.current !== null) {
+      window.clearTimeout(lockerHideTimer.current);
+    }
+    lockerHideTimer.current = window.setTimeout(() => {
+      setLockerAnchor(null);
+      lockerHideTimer.current = null;
+    }, 120);
+  }, []);
+  useEffect(
+    () => () => {
+      if (lockerHideTimer.current !== null) {
+        window.clearTimeout(lockerHideTimer.current);
+      }
+    },
+    [],
+  );
 
   const fetchSeqRef = useRef(0);
   const ranksRef = useRef(ranksByPuuid);
@@ -963,6 +1204,8 @@ export function LiveMatchView({
               isPregame={status === "PREGAME"}
               assets={assets}
               onSelectPlayer={(n, t) => onSelectPlayer(n, t, effectiveRegion)}
+              onHoverPlayer={showLocker}
+              onLeavePlayer={hideLocker}
             />
           )}
 
@@ -977,9 +1220,20 @@ export function LiveMatchView({
               isPregame={status === "PREGAME"}
               assets={assets}
               onSelectPlayer={(n, t) => onSelectPlayer(n, t, effectiveRegion)}
+              onHoverPlayer={showLocker}
+              onLeavePlayer={hideLocker}
             />
           )}
         </div>
+      )}
+
+      {lockerAnchor && (
+        <PlayerLockerTooltip
+          key={`${lockerAnchor.player.puuid}:${lockerAnchor.placement}`}
+          anchor={lockerAnchor}
+          region={effectiveRegion}
+          assets={assets}
+        />
       )}
     </div>
   );

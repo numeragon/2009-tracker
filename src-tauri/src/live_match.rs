@@ -816,6 +816,222 @@ async fn fetch_party_snapshot(
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoadoutGunDto {
+    /// Weapon UUID (`Guns[].ID`).
+    pub weapon_id: String,
+    /// Equipped skin level UUID (`Guns[].Skins[0].ID`).
+    pub skin_level_id: Option<String>,
+    /// Skin UUID (`Guns[].Skins[0].TypeID`).
+    pub skin_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlayerLoadoutResponse {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub guns: Vec<LoadoutGunDto>,
+    pub card_id: Option<String>,
+    pub title_id: Option<String>,
+}
+
+fn loadout_error(message: impl Into<String>) -> PlayerLoadoutResponse {
+    PlayerLoadoutResponse {
+        ok: false,
+        message: Some(message.into()),
+        guns: Vec::new(),
+        card_id: None,
+        title_id: None,
+    }
+}
+
+const LOADOUT_CACHE_TTL: Duration = Duration::from_secs(300);
+
+struct CachedLoadout {
+    response: PlayerLoadoutResponse,
+    fetched_at: Instant,
+}
+
+static LOADOUT_CACHE: OnceLock<Mutex<HashMap<String, CachedLoadout>>> = OnceLock::new();
+
+fn loadout_cache() -> &'static Mutex<HashMap<String, CachedLoadout>> {
+    LOADOUT_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reads another player's equipped skins. The endpoint is keyed by PUUID and
+/// is served by the local Riot Client session, so it works for every player in
+/// the current match (including incognito ones).
+#[tauri::command]
+pub async fn fetch_player_loadout(
+    puuid: String,
+    region_fallback: Option<String>,
+) -> Result<PlayerLoadoutResponse, String> {
+    let puuid = puuid.trim().to_string();
+    let key = puuid.to_lowercase();
+    if key.is_empty() {
+        return Ok(loadout_error("プレイヤーIDが空です。"));
+    }
+
+    if let Ok(guard) = loadout_cache().lock() {
+        if let Some(entry) = guard.get(&key) {
+            if entry.fetched_at.elapsed() < LOADOUT_CACHE_TTL {
+                return Ok(entry.response.clone());
+            }
+        }
+    }
+
+    let Some(lock) = read_lockfile() else {
+        return Ok(loadout_error(
+            "VALORANT（Riot Client）が起動していません。ゲームを起動してから再試行してください。",
+        ));
+    };
+
+    let local_client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(6))
+        .build()
+        .map_err(|e| format!("ローカルHTTPクライアント初期化エラー: {e}"))?;
+    let remote_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTPクライアント初期化エラー: {e}"))?;
+
+    let basic = BASE64.encode(format!("riot:{}", lock.password));
+    let token_url = format!("https://127.0.0.1:{}/entitlements/v1/token", lock.port);
+    let token_resp = match local_client
+        .get(&token_url)
+        .header(AUTHORIZATION, format!("Basic {basic}"))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<EntitlementsTokenResp>().await {
+            Ok(data) => data,
+            Err(_) => {
+                return Ok(loadout_error(
+                    "Riot Client の認証情報を解析できませんでした。",
+                ));
+            }
+        },
+        _ => {
+            return Ok(loadout_error(
+                "Riot Client にログインしていません。VALORANT を起動してから再試行してください。",
+            ));
+        }
+    };
+
+    let log_info = scan_shooter_game_log();
+    let (_glz, fb_shard) = fallback_glz_and_shard(region_fallback.as_deref().unwrap_or("ap"));
+    let shard = log_info.shard.unwrap_or(fb_shard);
+    let client_version = resolve_client_version(&remote_client, log_info.client_version).await;
+
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", token_resp.access_token)) {
+        headers.insert(AUTHORIZATION, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&token_resp.token) {
+        headers.insert("X-Riot-Entitlements-JWT", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&client_version) {
+        headers.insert("X-Riot-ClientVersion", v);
+    }
+    headers.insert(
+        "X-Riot-ClientPlatform",
+        HeaderValue::from_static(CLIENT_PLATFORM_B64),
+    );
+
+    let url = format!(
+        "https://pd.{shard}.a.pvp.net/personalization/v3/players/{puuid}/playerloadout"
+    );
+    let resp = match remote_client.get(&url).headers(headers).send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            return Ok(loadout_error(format!(
+                "ロッカーの取得に失敗しました: {e}"
+            )));
+        }
+    };
+
+    if !resp.status().is_success() {
+        let code = resp.status().as_u16();
+        let message = if code == 401 || code == 403 {
+            "ロッカーを取得できませんでした（認証エラー）。VALORANT を起動し直してください。"
+        } else if code == 404 {
+            "このプレイヤーのロッカーは取得できませんでした。"
+        } else {
+            return Ok(loadout_error(format!(
+                "ロッカーを取得できませんでした (HTTP {code})。"
+            )));
+        };
+        return Ok(loadout_error(message));
+    }
+
+    let json = resp
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("ロッカーの解析に失敗しました: {e}"))?;
+
+    let guns = json
+        .get("Guns")
+        .and_then(|v| v.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|gun| {
+                    let weapon_id = gun.get("ID").and_then(|v| v.as_str())?.to_string();
+                    let first_skin = gun
+                        .get("Skins")
+                        .and_then(|v| v.as_array())
+                        .and_then(|skins| skins.first());
+                    let skin_level_id = first_skin
+                        .and_then(|s| s.get("ID"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let skin_id = first_skin
+                        .and_then(|s| s.get("TypeID"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    Some(LoadoutGunDto {
+                        weapon_id,
+                        skin_level_id,
+                        skin_id,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let card_id = json
+        .pointer("/Identity/PlayerCardID")
+        .and_then(|v| v.as_str())
+        .filter(|v| !is_zero_guid(v))
+        .map(String::from);
+    let title_id = json
+        .pointer("/Identity/PlayerTitleID")
+        .and_then(|v| v.as_str())
+        .filter(|v| !is_zero_guid(v))
+        .map(String::from);
+
+    let response = PlayerLoadoutResponse {
+        ok: true,
+        message: None,
+        guns,
+        card_id,
+        title_id,
+    };
+    if let Ok(mut guard) = loadout_cache().lock() {
+        guard.insert(
+            key,
+            CachedLoadout {
+                response: response.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
+    }
+    Ok(response)
+}
+
 #[tauri::command]
 pub async fn fetch_live_match(region_fallback: String) -> Result<LiveMatchResponse, String> {
     let Some(lock) = read_lockfile() else {

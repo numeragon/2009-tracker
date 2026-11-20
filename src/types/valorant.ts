@@ -462,6 +462,21 @@ export interface LivePlayerRankInfo {
   accountTag?: string | null;
 }
 
+/** One equipped gun from `personalization/v3/players/{puuid}/playerloadout`. */
+export interface LoadoutGun {
+  weaponId: string;
+  skinLevelId: string | null;
+  skinId: string | null;
+}
+
+export interface PlayerLoadoutResponse {
+  ok: boolean;
+  message: string | null;
+  guns: LoadoutGun[];
+  cardId: string | null;
+  titleId: string | null;
+}
+
 export interface TierAsset {
   tier: number;
   tierName: string;

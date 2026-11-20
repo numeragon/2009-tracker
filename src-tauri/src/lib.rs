@@ -63,6 +63,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             window_close_or_tray,
             live_match::fetch_live_match,
+            live_match::fetch_player_loadout,
             local_api::fetch_crosshair_settings,
             local_api::fetch_storefront,
             riot_auth::riot_login,
