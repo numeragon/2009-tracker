@@ -9,7 +9,7 @@ use crate::live_match::{
     CLIENT_PLATFORM_B64, LockfileInfo, fallback_glz_and_shard, read_lockfile,
     resolve_client_version, scan_shooter_game_log,
 };
-use crate::riot_auth::RiotSessionInput;
+use crate::riot_auth::{RiotSessionInput, fetch_entitlements};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,14 +67,20 @@ fn extract_json_string(data: &Value, key: &str) -> Option<String> {
     None
 }
 
-/// Routes the Riot Client may expose for player preferences. Newer clients only
-/// expose the product-scoped route, which is why the bare `Ares.PlayerSettings`
-/// path can answer with HTTP 500 even while the client is running.
+/// Routes the Riot Client may expose for player preferences, ordered by how
+/// widely they are supported. The bare `data-json` route is the documented one
+/// (ValorantCC, valorant-api-types); the product-scoped variant is what newer
+/// clients expose first. `/data` returns the document as a JSON string.
 const PREFERENCE_ROUTES: [&str; 3] = [
-    "/player-preferences/v1/data-json/productId/valorant/type/Ares.PlayerSettings",
     "/player-preferences/v1/data-json/Ares.PlayerSettings",
+    "/player-preferences/v1/data-json/productId/valorant/type/Ares.PlayerSettings",
     "/player-preferences/v1/data/Ares.PlayerSettings",
 ];
+
+/// Riot's edge rejects requests that do not carry a `User-Agent` with
+/// `HTTP 403 RBAC: access denied` (reqwest sends none by default), so every
+/// cloud call must set one. The exact value is not validated.
+const RIOT_USER_AGENT: &str = "RiotClient/111.0.0.3261.5663 (Windows NT 10.0; Win64; x64)";
 
 fn decode_base64_any(raw: &str) -> Option<Vec<u8>> {
     BASE64.decode(raw).ok().or_else(|| {
@@ -133,15 +139,33 @@ fn decode_preference_payload(value: &Value) -> Option<Value> {
     }
 }
 
+#[derive(PartialEq)]
+enum PreferencesReadiness {
+    Ready,
+    /// The client does not expose the readiness route (older builds).
+    Unknown,
+    /// The plugin answered but is not serving settings yet.
+    NotReady,
+}
+
 /// The preferences plugin answers 500 for a short time while it is still
-/// starting (e.g. right after the Riot Client launches), so wait briefly for
-/// it to report ready before giving up.
-async fn wait_for_preferences_ready(client: &reqwest::Client, port: &str, basic: &str) {
+/// starting (e.g. right after the Riot Client launches, or while VALORANT is
+/// not at the main menu), so wait briefly for it to report ready before
+/// requesting the settings document.
+async fn wait_for_preferences_ready(
+    client: &reqwest::Client,
+    port: &str,
+    basic: &str,
+) -> PreferencesReadiness {
     let url = format!("https://127.0.0.1:{port}/player-preferences/v1/ready");
+    let mut saw_not_ready = false;
+
     for attempt in 0..6 {
         match client
             .get(&url)
             .header(AUTHORIZATION, format!("Basic {basic}"))
+            .header("Accept", "application/json")
+            .header("User-Agent", RIOT_USER_AGENT)
             .send()
             .await
         {
@@ -152,16 +176,24 @@ async fn wait_for_preferences_ready(client: &reqwest::Client, port: &str, basic:
                     .map(|body| body.trim().eq_ignore_ascii_case("true"))
                     .unwrap_or(false);
                 if ready {
-                    return;
+                    return PreferencesReadiness::Ready;
                 }
+                saw_not_ready = true;
             }
             // Older clients do not expose the readiness route at all.
-            Ok(resp) if resp.status().as_u16() == 404 => return,
+            Ok(resp) if resp.status().as_u16() == 404 => return PreferencesReadiness::Unknown,
+            Ok(resp) if resp.status().is_server_error() => saw_not_ready = true,
             _ => {}
         }
         if attempt < 5 {
             tokio::time::sleep(Duration::from_millis(400)).await;
         }
+    }
+
+    if saw_not_ready {
+        PreferencesReadiness::NotReady
+    } else {
+        PreferencesReadiness::Unknown
     }
 }
 
@@ -170,7 +202,7 @@ async fn fetch_preference_local(
     lock: &LockfileInfo,
 ) -> Result<Value, String> {
     let basic = BASE64.encode(format!("riot:{}", lock.password));
-    wait_for_preferences_ready(client, &lock.port, &basic).await;
+    let readiness = wait_for_preferences_ready(client, &lock.port, &basic).await;
 
     let mut last_error = String::from("プレイヤー設定を取得できませんでした。");
     for route in PREFERENCE_ROUTES {
@@ -178,6 +210,8 @@ async fn fetch_preference_local(
         let resp = match client
             .get(&url)
             .header(AUTHORIZATION, format!("Basic {basic}"))
+            .header("Accept", "application/json")
+            .header("User-Agent", RIOT_USER_AGENT)
             .send()
             .await
         {
@@ -189,7 +223,25 @@ async fn fetch_preference_local(
         };
 
         if !resp.status().is_success() {
-            last_error = format!("HTTP {}", resp.status().as_u16());
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            let snippet: String = body
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(120)
+                .collect();
+            last_error = if snippet.is_empty() {
+                format!("HTTP {}", status.as_u16())
+            } else {
+                format!("HTTP {} {}", status.as_u16(), snippet)
+            };
+            // The plugin already told us it is not ready, so the other routes
+            // will fail the same way. Stop instead of waiting on each one.
+            if readiness == PreferencesReadiness::NotReady && status.is_server_error() {
+                break;
+            }
             continue;
         }
 
@@ -202,17 +254,34 @@ async fn fetch_preference_local(
         }
     }
 
+    // A 5xx here means the plugin is loaded but has no settings to serve yet,
+    // which is what happens while VALORANT is not at the main menu. Report it
+    // in plain Japanese instead of leaking the bare status code.
+    if readiness != PreferencesReadiness::Ready && last_error.starts_with("HTTP 5") {
+        return Err(
+            "クライアントの設定プラグインがまだ準備できていません（VALORANTをメインメニューまで進めてください）"
+                .to_string(),
+        );
+    }
+
     Err(last_error)
 }
 
 fn preference_hosts(region: &str) -> Vec<&'static str> {
-    match region.to_ascii_lowercase().as_str() {
+    let mut hosts: Vec<&'static str> = match region.to_ascii_lowercase().as_str() {
         "eu" => vec!["euc1", "usw2"],
         "na" | "latam" | "br" => vec!["usw2", "euc1"],
-        "kr" => vec!["apne1", "apse1"],
-        "ap" => vec!["apne1", "apse1"],
+        "kr" | "ap" => vec!["apne1", "apse1"],
         _ => vec!["usw2", "euc1", "apne1", "apse1"],
+    };
+    // The geo lookup can be missing or stale, so keep every pod as a fallback
+    // instead of failing when the first region does not own the account.
+    for host in ["usw2", "euc1", "apne1", "apse1"] {
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
     }
+    hosts
 }
 
 /// Cloud copy of the same settings document. This is used when the local
@@ -226,12 +295,18 @@ async fn fetch_preference_remote(
     region: &str,
 ) -> Result<Value, String> {
     let mut last_error = String::from("プレイヤー設定を取得できませんでした。");
+    let mut unauthorized = false;
     for host in preference_hosts(region) {
         let url = format!(
             "https://player-preferences-{host}.pp.sgp.pvp.net/playerPref/v3/getPreference/Ares.PlayerSettings"
         );
         let mut request = client
             .get(&url)
+            // Riot's edge answers `HTTP 403 RBAC: access denied` to requests
+            // without a User-Agent, and reqwest sends none by default.
+            .header("User-Agent", RIOT_USER_AGENT)
+            .header("Accept", "application/json")
+            .header("Content-Type", "application/json")
             .header(AUTHORIZATION, format!("Bearer {access_token}"))
             .header("X-Riot-ClientPlatform", CLIENT_PLATFORM_B64);
         if !entitlement.is_empty() {
@@ -250,7 +325,25 @@ async fn fetch_preference_remote(
         };
 
         if !resp.status().is_success() {
-            last_error = format!("HTTP {}", resp.status().as_u16());
+            let status = resp.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED {
+                unauthorized = true;
+            }
+            // Keep a short body snippet: Riot's edge explains the refusal here
+            // (e.g. "RBAC: access denied"), which makes the next report useful.
+            let body = resp.text().await.unwrap_or_default();
+            let snippet: String = body
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(120)
+                .collect();
+            last_error = if snippet.is_empty() {
+                format!("HTTP {}", status.as_u16())
+            } else {
+                format!("HTTP {} {}", status.as_u16(), snippet)
+            };
             continue;
         }
 
@@ -261,6 +354,13 @@ async fn fetch_preference_remote(
             },
             Err(e) => last_error = format!("設定データの解析に失敗しました: {e}"),
         }
+    }
+
+    if unauthorized {
+        return Err(
+            "Riotセッションの有効期限が切れました。ショップ画面から再ログインしてください。"
+                .to_string(),
+        );
     }
 
     Err(last_error)
@@ -326,23 +426,42 @@ pub async fn fetch_crosshair_settings(
         }
     }
 
-    // 2) Cloud player-preferences. Prefer the stored Riot account session so
-    //    this also works with the game closed, then fall back to the local
-    //    client's tokens.
-    let mut tokens: Option<(String, String)> = session
-        .as_ref()
-        .map(|s| (s.access_token.clone(), s.entitlements.clone()));
-    if tokens.is_none() {
-        if let Some(lock) = lock.as_ref() {
-            if let Ok(local_tokens) =
-                fetch_riot_tokens(&local_client, &lock.port, &lock.password).await
+    // 2) Cloud player-preferences. Try the stored Riot account session first so
+    //    this also works with the game closed, then the local client's tokens:
+    //    a token minted by the running Riot Client is always accepted by Riot's
+    //    edge, while an older stored session can be rejected (HTTP 403).
+    let mut candidates: Vec<(String, String, &'static str)> = Vec::new();
+    let mut session_expired = false;
+    if let Some(session) = session.as_ref() {
+        // A stored session can be days old; its entitlement JWT expires after
+        // about an hour, and Riot's edge rejects a stale one with HTTP 403.
+        // Mint a fresh entitlement from the still-valid access token first.
+        let entitlement = match fetch_entitlements(&remote_client, &session.access_token).await {
+            Ok(fresh) => fresh,
+            Err(err) => {
+                if err.contains("HTTP 401") {
+                    session_expired = true;
+                }
+                session.entitlements.clone()
+            }
+        };
+        candidates.push((session.access_token.clone(), entitlement, "session"));
+    }
+    if let Some(lock) = lock.as_ref() {
+        if let Ok(local_tokens) =
+            fetch_riot_tokens(&local_client, &lock.port, &lock.password).await
+        {
+            if !local_tokens.access_token.is_empty()
+                && !candidates
+                    .iter()
+                    .any(|(token, _, _)| token == &local_tokens.access_token)
             {
-                tokens = Some((local_tokens.access_token, local_tokens.entitlement));
+                candidates.push((local_tokens.access_token, local_tokens.entitlement, "client"));
             }
         }
     }
 
-    let Some((access_token, entitlement)) = tokens else {
+    if candidates.is_empty() {
         let message = if lock.is_none() && session.is_none() {
             "VALORANT（Riot Client）が起動していません。ゲームを起動するか、ショップ画面からRiotアカウントにログインすると取得できます。"
                 .to_string()
@@ -357,37 +476,74 @@ pub async fn fetch_crosshair_settings(
             profile_name: None,
             crosshair_color: None,
         });
-    };
+    }
+
+    if session_expired && candidates.len() == 1 {
+        return Ok(CrosshairFetchResponse {
+            ok: false,
+            message: Some(
+                "Riotセッションの有効期限が切れました。ショップ画面から再ログインしてください。"
+                    .to_string(),
+            ),
+            profile_data: None,
+            profile_name: None,
+            crosshair_color: None,
+        });
+    }
 
     let client_version =
         resolve_client_version(&remote_client, log_info.client_version).await;
 
-    match fetch_preference_remote(
-        &remote_client,
-        &access_token,
-        &entitlement,
-        &client_version,
-        &region_hint,
-    )
-    .await
-    {
-        Ok(settings) => Ok(crosshair_response(&settings)),
-        Err(remote_error) => {
-            let detail = local_error
-                .filter(|local| !local.is_empty())
-                .map(|local| format!("クライアント: {local} / クラウド: {remote_error}"))
-                .unwrap_or(remote_error);
-            Ok(CrosshairFetchResponse {
-                ok: false,
-                message: Some(format!(
-                    "クロスヘア設定を取得できませんでした。ゲーム内で一度クロスヘアを保存してから再取得してください。（{detail}）"
-                )),
-                profile_data: None,
-                profile_name: None,
-                crosshair_color: None,
-            })
+    let mut remote_error = String::from("プレイヤー設定を取得できませんでした。");
+    for (access_token, entitlement, _source) in &candidates {
+        match fetch_preference_remote(
+            &remote_client,
+            access_token,
+            entitlement,
+            &client_version,
+            &region_hint,
+        )
+        .await
+        {
+            Ok(settings) => return Ok(crosshair_response(&settings)),
+            // Another token source (the running Riot Client) may still work,
+            // so keep trying until every candidate is exhausted.
+            Err(err) => remote_error = err,
         }
     }
+
+    // Session expiry is actionable on its own: telling the user to re-login is
+    // better than a raw HTTP status.
+    if remote_error.starts_with("Riotセッションの有効期限が切れました") {
+        return Ok(CrosshairFetchResponse {
+            ok: false,
+            message: Some(remote_error),
+            profile_data: None,
+            profile_name: None,
+            crosshair_color: None,
+        });
+    }
+
+    let hint = if remote_error.contains("HTTP 403") {
+        "Riotのクラウド設定APIがこのセッションを拒否しました。ゲーム（VALORANT）を起動した状態で再取得するか、ショップ画面からRiotアカウントに再ログインしてください。"
+    } else if session.is_none() {
+        "ショップ画面からRiotアカウントでログインすると、ゲームを起動していなくても取得できます。"
+    } else {
+        "ゲーム内で一度クロスヘアを保存してから再取得してください。"
+    };
+    let detail = local_error
+        .filter(|local| !local.is_empty())
+        .map(|local| format!("クライアント: {local} / クラウド: {remote_error}"))
+        .unwrap_or(remote_error);
+    Ok(CrosshairFetchResponse {
+        ok: false,
+        message: Some(format!(
+            "クロスヘア設定を取得できませんでした。{hint}（{detail}）"
+        )),
+        profile_data: None,
+        profile_name: None,
+        crosshair_color: None,
+    })
 }
 
 async fn fetch_riot_tokens(
@@ -766,5 +922,18 @@ mod tests {
         assert_eq!(shards.first().map(String::as_str), Some("ap"));
         assert_eq!(shards.len(), 4);
         assert_eq!(storefront_shards("").len(), 4);
+    }
+
+    #[test]
+    fn preference_hosts_keep_region_first_and_cover_every_pod() {
+        assert_eq!(preference_hosts("eu")[0], "euc1");
+        assert_eq!(preference_hosts("ap")[0], "apne1");
+        let unknown = preference_hosts("latam");
+        assert_eq!(unknown[0], "usw2");
+        assert_eq!(unknown.len(), 4);
+        let mut sorted = unknown.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 4);
     }
 }

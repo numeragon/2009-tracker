@@ -111,7 +111,12 @@ fn auth_client() -> Result<reqwest::Client, String> {
         .map_err(|e| format!("HTTPクライアント初期化エラー: {e}"))
 }
 
-async fn fetch_entitlements(client: &reqwest::Client, access_token: &str) -> Result<String, String> {
+/// Exchanges an RSO access token for a fresh entitlement JWT. Also used to
+/// refresh a stored session's entitlement before calling Riot's cloud APIs.
+pub(crate) async fn fetch_entitlements(
+    client: &reqwest::Client,
+    access_token: &str,
+) -> Result<String, String> {
     let resp = client
         .post("https://entitlements.auth.riotgames.com/api/token/v1")
         .header(AUTHORIZATION, format!("Bearer {access_token}"))
