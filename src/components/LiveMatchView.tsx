@@ -940,6 +940,7 @@ export function LiveMatchView({
   }, [autoRefresh, isActiveTab, selectedTabId, loadLiveMatch, liveStatus]);
 
   // Fast 1s poll for both teams' agent picks while in agent select.
+  const picksRegion = normalizeRegion(liveData?.detectedRegion, defaultRegion);
   useEffect(() => {
     if (
       !autoRefresh ||
@@ -956,7 +957,7 @@ export function LiveMatchView({
       if (inFlight) return;
       inFlight = true;
       try {
-        const res = await fetchPregamePicks();
+        const res = await fetchPregamePicks(picksRegion);
         if (cancelled || !res.ok || !res.matchId) return;
         setLiveData((prev) => {
           if (!prev || prev.status !== "PREGAME" || prev.matchId !== res.matchId) {
@@ -968,6 +969,16 @@ export function LiveMatchView({
               (item) => item.puuid === player.puuid.toLowerCase(),
             );
             if (!pick) return player;
+            // Never let a masked copy erase an agent we already know about.
+            if (!pick.agentId && player.agentId) return player;
+            const rank = (state: string) =>
+              state === "locked" ? 2 : state === "selected" ? 1 : 0;
+            if (
+              pick.agentId === player.agentId &&
+              rank(pick.selectionState) < rank(player.selectionState)
+            ) {
+              return player;
+            }
             if (
               pick.agentId === player.agentId &&
               pick.selectionState === player.selectionState
@@ -996,7 +1007,7 @@ export function LiveMatchView({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [autoRefresh, isActiveTab, selectedTabId, liveStatus]);
+  }, [autoRefresh, isActiveTab, selectedTabId, liveStatus, picksRegion]);
 
   // Save / Update Current Match as a Persistent Sub-Tab
   const handleSaveCurrentMatchTab = () => {

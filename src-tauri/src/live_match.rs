@@ -2381,7 +2381,9 @@ impl PregamePicksResponse {
 /// Lightweight agent-select refresh: only the pregame match document, so the
 /// UI can poll every second without redoing name/party/rank resolution.
 #[tauri::command]
-pub async fn fetch_pregame_picks() -> Result<PregamePicksResponse, String> {
+pub async fn fetch_pregame_picks(
+    region_fallback: Option<String>,
+) -> Result<PregamePicksResponse, String> {
     let Some(lock) = read_lockfile() else {
         return Ok(PregamePicksResponse::error(
             "VALORANT（Riot Client）が起動していません。",
@@ -2422,7 +2424,8 @@ pub async fn fetch_pregame_picks() -> Result<PregamePicksResponse, String> {
     };
 
     let log_info = scan_shooter_game_log();
-    let (fb_glz, fb_shard) = fallback_glz_and_shard("ap");
+    let (fb_glz, fb_shard) =
+        fallback_glz_and_shard(region_fallback.as_deref().unwrap_or("ap"));
     let glz_region = log_info.glz_region.unwrap_or(fb_glz);
     let shard = log_info.shard.unwrap_or(fb_shard);
     let client_version = resolve_client_version(&remote_client, log_info.client_version).await;
@@ -2484,34 +2487,13 @@ pub async fn fetch_pregame_picks() -> Result<PregamePicksResponse, String> {
         }
     };
 
-    let mut picks = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut collect = |list: &Vec<Value>| {
-        for p in list {
-            let subject = p.get("Subject").and_then(|v| v.as_str()).unwrap_or("");
-            if subject.is_empty() || !seen.insert(subject.to_lowercase()) {
-                continue;
-            }
-            picks.push(PregamePickDto {
-                puuid: subject.to_lowercase(),
-                agent_id: p
-                    .get("CharacterID")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-                selection_state: p
-                    .get("CharacterSelectionState")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string(),
-            });
-        }
-    };
+    let mut entries: Vec<(String, Value)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
 
     if let Some(teams) = json.get("Teams").and_then(|v| v.as_array()) {
         for team in teams {
             if let Some(list) = team.get("Players").and_then(|v| v.as_array()) {
-                collect(list);
+                merge_pregame_entries(&mut entries, &mut index, "", list);
             }
         }
     }
@@ -2521,9 +2503,33 @@ pub async fn fetch_pregame_picks() -> Result<PregamePicksResponse, String> {
             .and_then(|v| v.get("Players"))
             .and_then(|v| v.as_array())
         {
-            collect(list);
+            merge_pregame_entries(&mut entries, &mut index, "", list);
         }
     }
+
+    let picks: Vec<PregamePickDto> = entries
+        .into_iter()
+        .filter_map(|(_, p)| {
+            let subject = p.get("Subject").and_then(|v| v.as_str())?.to_lowercase();
+            if subject.is_empty() {
+                return None;
+            }
+            Some(PregamePickDto {
+                puuid: subject,
+                agent_id: p
+                    .get("CharacterID")
+                    .and_then(|v| v.as_str())
+                    .filter(|v| !is_zero_guid(v))
+                    .unwrap_or("")
+                    .to_string(),
+                selection_state: p
+                    .get("CharacterSelectionState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            })
+        })
+        .collect();
 
     Ok(PregamePicksResponse {
         ok: true,
@@ -2883,6 +2889,53 @@ async fn build_core_game_response(
     }
 }
 
+fn pregame_player_score(player: &Value) -> (bool, u8) {
+    let agent = player
+        .get("CharacterID")
+        .and_then(|v| v.as_str())
+        .filter(|v| !is_zero_guid(v))
+        .unwrap_or("");
+    let state = player
+        .get("CharacterSelectionState")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let rank = match state {
+        "locked" => 2,
+        "selected" => 1,
+        _ => 0,
+    };
+    (!agent.is_empty(), rank)
+}
+
+/// Merges a team's players into `entries`. Riot can split the roster between
+/// `Teams` and `AllyTeam`/`EnemyTeam`; the enemy agent is often only filled in
+/// `EnemyTeam`, so a masked copy must not overwrite a revealed one.
+fn merge_pregame_entries(
+    entries: &mut Vec<(String, Value)>,
+    index: &mut HashMap<String, usize>,
+    tid: &str,
+    players: &[Value],
+) {
+    for p in players {
+        let sub = p
+            .get("Subject")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if sub.is_empty() {
+            continue;
+        }
+        if let Some(&i) = index.get(&sub) {
+            if pregame_player_score(p) > pregame_player_score(&entries[i].1) {
+                entries[i].1 = p.clone();
+            }
+            continue;
+        }
+        index.insert(sub, entries.len());
+        entries.push((tid.to_string(), p.clone()));
+    }
+}
+
 async fn build_pregame_response(
     remote_client: &reqwest::Client,
     shard: &str,
@@ -2908,20 +2961,10 @@ async fn build_pregame_response(
     // shows up under AllyTeam / EnemyTeam (some pregame payloads omit the
     // enemy team from `Teams`).
     let mut team_entries: Vec<(String, Value)> = Vec::new();
-    let mut seen_puuids: HashSet<String> = HashSet::new();
+    let mut index_by_puuid: HashMap<String, usize> = HashMap::new();
     let mut push_team = |tid: &str, team: &Value| {
         if let Some(plist) = team.get("Players").and_then(|v| v.as_array()) {
-            for p in plist {
-                let sub = p
-                    .get("Subject")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                if !sub.is_empty() && !seen_puuids.insert(sub) {
-                    continue;
-                }
-                team_entries.push((tid.to_string(), p.clone()));
-            }
+            merge_pregame_entries(&mut team_entries, &mut index_by_puuid, tid, plist);
         }
     };
 
@@ -3012,6 +3055,7 @@ async fn build_pregame_response(
             agent_id: p
                 .get("CharacterID")
                 .and_then(|v| v.as_str())
+                .filter(|v| !is_zero_guid(v))
                 .unwrap_or("")
                 .to_string(),
             selection_state: p
@@ -3098,5 +3142,49 @@ mod tests {
         assert_eq!(civil_from_days(0), (1970, 1, 1));
         assert_eq!(civil_from_days(20_454), (2026, 1, 1));
         assert_eq!(civil_from_days(20_697), (2026, 9, 1));
+    }
+
+    #[test]
+    fn enemy_team_reveal_overrides_masked_teams_copy() {
+        let masked = serde_json::json!({
+            "TeamID": "Red",
+            "Players": [{ "Subject": "e1", "CharacterID": "", "CharacterSelectionState": "" }]
+        });
+        let revealed = serde_json::json!({
+            "TeamID": "Red",
+            "Players": [{ "Subject": "e1", "CharacterID": "agent-1", "CharacterSelectionState": "locked" }]
+        });
+        let mut entries = Vec::new();
+        let mut index = HashMap::new();
+        merge_pregame_entries(
+            &mut entries,
+            &mut index,
+            "Red",
+            masked["Players"].as_array().unwrap(),
+        );
+        merge_pregame_entries(
+            &mut entries,
+            &mut index,
+            "Red",
+            revealed["Players"].as_array().unwrap(),
+        );
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1["CharacterID"], "agent-1");
+        assert_eq!(entries[0].1["CharacterSelectionState"], "locked");
+    }
+
+    #[test]
+    fn zero_guid_agent_counts_as_missing() {
+        let zero = serde_json::json!({
+            "Subject": "e1",
+            "CharacterID": "00000000-0000-0000-0000-000000000000",
+            "CharacterSelectionState": ""
+        });
+        let real = serde_json::json!({
+            "Subject": "e1",
+            "CharacterID": "agent-1",
+            "CharacterSelectionState": "selected"
+        });
+        assert!(pregame_player_score(&real) > pregame_player_score(&zero));
     }
 }

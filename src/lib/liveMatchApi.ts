@@ -78,7 +78,9 @@ export async function fetchLiveMatchFromClient(
  * Fast agent-select refresh: only the pregame match document, so the UI can
  * poll every second while both teams pick their agents.
  */
-export async function fetchPregamePicks(): Promise<PregamePicksResponse> {
+export async function fetchPregamePicks(
+  region: Region,
+): Promise<PregamePicksResponse> {
   const empty: PregamePicksResponse = {
     ok: false,
     message: null,
@@ -87,7 +89,9 @@ export async function fetchPregamePicks(): Promise<PregamePicksResponse> {
   };
   if (!isTauriRuntime()) return empty;
   try {
-    return await invoke<PregamePicksResponse>("fetch_pregame_picks");
+    return await invoke<PregamePicksResponse>("fetch_pregame_picks", {
+      regionFallback: region,
+    });
   } catch {
     return empty;
   }
