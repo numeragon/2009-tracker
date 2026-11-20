@@ -297,7 +297,7 @@ pub fn shutdown_tray(app: &AppHandle) {
     }
 }
 
-fn show_main_window(app: &AppHandle, navigate_to: Option<&str>) {
+pub(crate) fn show_main_window(app: &AppHandle, navigate_to: Option<&str>) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();

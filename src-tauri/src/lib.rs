@@ -22,6 +22,17 @@ pub fn run() {
     let start_in_background = std::env::args().any(|a| a == "--background");
 
     tauri::Builder::default()
+        // Registered first: a second launch (e.g. while the app is hidden in the
+        // tray) is forwarded to the running instance and exits immediately
+        // instead of starting a duplicate recorder + tray icon.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            // Autostart launches use `--background`; they must not pop the
+            // window open when the app is already running.
+            if argv.iter().any(|arg| arg == "--background") {
+                return;
+            }
+            replay::host::show_main_window(app, None);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_process::init())
