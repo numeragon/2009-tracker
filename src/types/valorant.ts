@@ -457,6 +457,9 @@ export interface LivePlayerRankInfo {
   kd: number | null;
   hsPercent: number | null;
   kdSampleSize: number;
+  /** Real Riot ID reported by the stats API (used when the roster is masked). */
+  accountName?: string | null;
+  accountTag?: string | null;
 }
 
 export interface TierAsset {

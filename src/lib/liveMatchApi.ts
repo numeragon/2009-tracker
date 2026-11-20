@@ -74,7 +74,13 @@ async function fetchKdStatsByPuuid(
   puuid: string,
   region: Region,
   cleanKey: string,
-): Promise<{ kd: number | null; hsPercent: number | null; sampleSize: number }> {
+): Promise<{
+  kd: number | null;
+  hsPercent: number | null;
+  sampleSize: number;
+  accountName: string | null;
+  accountTag: string | null;
+}> {
   // 1. Fast path: stored-matches (up to 20 competitive games, ~3 KB payload)
   try {
     const smRes = await fetch(
@@ -109,7 +115,7 @@ async function fetchKdStatsByPuuid(
         const kd = Number((deaths > 0 ? kills / deaths : kills).toFixed(2));
         const hsPercent =
           totalShots > 0 ? Number(((head / totalShots) * 100).toFixed(1)) : null;
-        return { kd, hsPercent, sampleSize };
+        return { kd, hsPercent, sampleSize, accountName: null, accountTag: null };
       }
     }
   } catch {
@@ -143,12 +149,20 @@ async function fetchKdStatsByPuuid(
         let head = 0;
         let totalShots = 0;
         let counted = 0;
+        let accountName: string | null = null;
+        let accountTag: string | null = null;
         const targetLower = puuid.toLowerCase();
 
         for (const m of targetList) {
           const me = (m.players ?? []).find((p) => p.puuid.toLowerCase() === targetLower);
           if (!me) continue;
           counted++;
+          // The match document keeps the real Riot ID even when the live
+          // roster hides it behind incognito mode.
+          if (!accountName && me.name) {
+            accountName = me.name;
+            accountTag = me.tag || null;
+          }
           kills += me.stats?.kills ?? 0;
           deaths += me.stats?.deaths ?? 0;
           const h = me.stats?.headshots ?? 0;
@@ -163,6 +177,8 @@ async function fetchKdStatsByPuuid(
             kd: Number((deaths > 0 ? kills / deaths : kills).toFixed(2)),
             hsPercent: totalShots > 0 ? Number(((head / totalShots) * 100).toFixed(1)) : null,
             sampleSize: counted,
+            accountName,
+            accountTag,
           };
         }
       }
@@ -171,7 +187,13 @@ async function fetchKdStatsByPuuid(
     // Ignore fallback error
   }
 
-  return { kd: null, hsPercent: null, sampleSize: 0 };
+  return {
+    kd: null,
+    hsPercent: null,
+    sampleSize: 0,
+    accountName: null,
+    accountTag: null,
+  };
 }
 
 export async function fetchPlayerRankByPuuid(
@@ -180,7 +202,7 @@ export async function fetchPlayerRankByPuuid(
   apiKey: string,
 ): Promise<LivePlayerRankInfo | null> {
   if (!puuid) return null;
-  const cacheKey = `live_puuid_stats_v2:${region}:${puuid.toLowerCase()}`;
+  const cacheKey = `live_puuid_stats_v3:${region}:${puuid.toLowerCase()}`;
   const cached = getCachedData<LivePlayerRankInfo>(cacheKey);
   if (cached) return cached;
 
@@ -217,6 +239,8 @@ export async function fetchPlayerRankByPuuid(
           kd: kdStats.kd,
           hsPercent: kdStats.hsPercent,
           kdSampleSize: kdStats.sampleSize,
+          accountName: kdStats.accountName,
+          accountTag: kdStats.accountTag,
         };
         setCachedData(cacheKey, fallbackInfo, LIVE_PLAYER_CACHE_TTL_MS);
         return fallbackInfo;
@@ -246,6 +270,10 @@ export async function fetchPlayerRankByPuuid(
       kd: kdStats.kd,
       hsPercent: kdStats.hsPercent,
       kdSampleSize: kdStats.sampleSize,
+      // The MMR document is keyed by PUUID, so it still names incognito
+      // players whose live roster entry was masked.
+      accountName: d.account?.name?.trim() || kdStats.accountName,
+      accountTag: d.account?.tag?.trim() || kdStats.accountTag,
     };
 
     setCachedData(cacheKey, info, LIVE_PLAYER_CACHE_TTL_MS);

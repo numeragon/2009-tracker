@@ -161,7 +161,21 @@ function LiveTeamTable({
                   : undefined;
 
               const isMasked = p.isIncognito && !p.isSelf;
-              const canClickProfile = Boolean(p.gameName && p.tagLine);
+              // Incognito rosters expose a placeholder such as "Player" or
+              // "Player 3". The stats API is keyed by PUUID, so it still knows
+              // the real Riot ID and we can show it instead.
+              const placeholderName =
+                !p.gameName || /^player[\s_-]*\d*$/i.test(p.gameName.trim());
+              const revealedName =
+                (placeholderName || p.isIncognito) && rank?.accountName
+                  ? rank.accountName
+                  : null;
+              const revealedTag = revealedName
+                ? rank?.accountTag || p.tagLine
+                : "";
+              const displayName = revealedName ?? p.gameName;
+              const displayTag = revealedName ? revealedTag : p.tagLine;
+              const canClickProfile = Boolean(displayName && displayTag);
 
               return (
                 <tr
@@ -196,18 +210,18 @@ function LiveTeamTable({
                           {canClickProfile ? (
                             <button
                               type="button"
-                              onClick={() => onSelectPlayer(p.gameName, p.tagLine)}
+                              onClick={() => onSelectPlayer(displayName, displayTag)}
                               className="font-medium text-[#ededed] hover:underline truncate cursor-pointer text-left"
                               title={isMasked ? "匿名設定のプレイヤー（名前を解決）" : undefined}
                             >
-                              {p.gameName}
+                              {displayName}
                               <span className="font-num text-[#8f8f8f] font-normal ml-0.5">
-                                #{p.tagLine}
+                                #{displayTag}
                               </span>
                             </button>
                           ) : (
                             <span className="text-[#8f8f8f] truncate">
-                              {p.gameName || "Player"}
+                              {displayName || "Player"}
                             </span>
                           )}
 
@@ -215,7 +229,7 @@ function LiveTeamTable({
                             <span
                               title={
                                 canClickProfile
-                                  ? "ゲーム内では匿名設定ですが、クライアントAPIから名前を解決しています"
+                                  ? "ゲーム内では匿名設定ですが、PUUIDから名前を解決しています"
                                   : "匿名設定のプレイヤーです。名前を解決できませんでした"
                               }
                               className="text-[9px] px-1 py-0.2 rounded border border-[rgba(255,255,255,0.16)] text-[#8f8f8f] shrink-0"

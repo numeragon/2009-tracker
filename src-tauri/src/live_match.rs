@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read};
 use std::path::PathBuf;
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::fs::OpenOptionsExt;
@@ -431,39 +431,39 @@ async fn resolve_names(
     headers: &HeaderMap,
     puuids: &[String],
 ) -> HashMap<String, (String, String)> {
-    let mut map = HashMap::new();
     if puuids.is_empty() {
-        return map;
+        return HashMap::new();
     }
 
-    let url = format!("https://pd.{shard}.a.pvp.net/name-service/v2/players");
-    if let Ok(resp) = remote_client
-        .put(&url)
-        .headers(headers.clone())
-        .json(puuids)
-        .send()
-        .await
-    {
-        if resp.status().is_success() {
-            if let Ok(entries) = resp.json::<Vec<NameServiceEntry>>().await {
-                for entry in entries {
-                    if let Some((game_name, tag_line)) = service_entry_name(&entry) {
-                        if !is_generic_name(&game_name) {
-                            map.insert(entry.subject.to_lowercase(), (game_name, tag_line));
-                        }
-                    }
-                }
-            }
+    let mut map = name_service_lookup(remote_client, shard, headers, puuids).await;
+
+    // Riot sometimes masks a batched lookup while a single lookup still
+    // returns the real Riot ID, so retry the remaining players one by one.
+    let missing: Vec<String> = puuids
+        .iter()
+        .filter(|puuid| !map.contains_key(&puuid.to_lowercase()))
+        .cloned()
+        .collect();
+    for puuid in missing.iter().take(3) {
+        let single = name_service_lookup(
+            remote_client,
+            shard,
+            headers,
+            std::slice::from_ref(puuid),
+        )
+        .await;
+        if let Some((key, value)) = single.into_iter().next() {
+            map.insert(key, value);
         }
     }
 
     // Hidden players come back without a name (or with a generic one). Fill the
     // gaps from the local client, which still knows the identity behind each
     // PUUID for chat/presence.
-    let needs_more = puuids
+    let needs_local = puuids
         .iter()
         .any(|puuid| !map.contains_key(&puuid.to_lowercase()));
-    if needs_more {
+    if needs_local {
         for (puuid, (game_name, tag_line)) in fetch_local_identity_names().await {
             if is_generic_name(&game_name) {
                 continue;
@@ -477,7 +477,188 @@ async fn resolve_names(
         }
     }
 
+    // Last resort for incognito players: their older matches store the real
+    // Riot ID in `match-details`, which is not affected by the display filter.
+    reveal_names_from_history(remote_client, shard, headers, puuids, &mut map).await;
+
     map
+}
+
+async fn name_service_lookup(
+    client: &reqwest::Client,
+    shard: &str,
+    headers: &HeaderMap,
+    puuids: &[String],
+) -> HashMap<String, (String, String)> {
+    let mut map = HashMap::new();
+    let url = format!("https://pd.{shard}.a.pvp.net/name-service/v2/players");
+    let Ok(resp) = client
+        .put(&url)
+        .headers(headers.clone())
+        .json(puuids)
+        .send()
+        .await
+    else {
+        return map;
+    };
+    if !resp.status().is_success() {
+        return map;
+    }
+    let Ok(entries) = resp.json::<Vec<NameServiceEntry>>().await else {
+        return map;
+    };
+    for entry in entries {
+        if let Some((game_name, tag_line)) = service_entry_name(&entry) {
+            if !is_generic_name(&game_name) {
+                map.insert(entry.subject.to_lowercase(), (game_name, tag_line));
+            }
+        }
+    }
+    map
+}
+
+/// Number of history lookups per poll. The result is cached, so a lobby only
+/// pays for this once per player.
+const REVEAL_MAX_LOOKUPS: usize = 3;
+const REVEAL_MATCHES_PER_PLAYER: usize = 3;
+const REVEAL_MISS_TTL: Duration = Duration::from_secs(600);
+
+struct RevealCacheEntry {
+    name: Option<(String, String)>,
+    checked_at: Instant,
+}
+
+static REVEAL_CACHE: OnceLock<Mutex<HashMap<String, RevealCacheEntry>>> = OnceLock::new();
+
+fn reveal_cache() -> &'static Mutex<HashMap<String, RevealCacheEntry>> {
+    REVEAL_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn cached_revealed_name(puuid: &str) -> Option<Option<(String, String)>> {
+    let guard = reveal_cache().lock().ok()?;
+    let entry = guard.get(puuid)?;
+    if entry.name.is_some() || entry.checked_at.elapsed() < REVEAL_MISS_TTL {
+        Some(entry.name.clone())
+    } else {
+        None
+    }
+}
+
+fn store_revealed_name(puuid: &str, name: Option<(String, String)>) {
+    if let Ok(mut guard) = reveal_cache().lock() {
+        guard.insert(
+            puuid.to_string(),
+            RevealCacheEntry {
+                name,
+                checked_at: Instant::now(),
+            },
+        );
+    }
+}
+
+/// Reads the player's recent finished matches and takes the Riot ID stored in
+/// the match document. Incognito only masks the live roster, so older matches
+/// usually still contain the real name.
+async fn reveal_name_from_history(
+    client: &reqwest::Client,
+    shard: &str,
+    headers: &HeaderMap,
+    puuid: &str,
+) -> Option<(String, String)> {
+    let history_url = format!(
+        "https://pd.{shard}.a.pvp.net/match-history/v1/history/{puuid}?startIndex=0&endIndex=10"
+    );
+    let resp = client
+        .get(&history_url)
+        .headers(headers.clone())
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let history = resp.json::<Value>().await.ok()?;
+    let match_ids: Vec<String> = history
+        .get("History")
+        .and_then(|v| v.as_array())?
+        .iter()
+        .filter_map(|m| m.get("MatchID").and_then(|v| v.as_str()).map(String::from))
+        .take(REVEAL_MATCHES_PER_PLAYER)
+        .collect();
+
+    for match_id in match_ids {
+        let details_url =
+            format!("https://pd.{shard}.a.pvp.net/match-details/v1/matches/{match_id}");
+        let Ok(resp) = client
+            .get(&details_url)
+            .headers(headers.clone())
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(details) = resp.json::<Value>().await else {
+            continue;
+        };
+        let Some(players) = details.get("players").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for player in players {
+            let subject = player.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+            if !subject.eq_ignore_ascii_case(puuid) {
+                continue;
+            }
+            let game = player
+                .get("gameName")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let tag = player
+                .get("tagLine")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if !is_generic_name(game) {
+                return Some((game.to_string(), tag.to_string()));
+            }
+        }
+    }
+
+    None
+}
+
+async fn reveal_names_from_history(
+    client: &reqwest::Client,
+    shard: &str,
+    headers: &HeaderMap,
+    puuids: &[String],
+    map: &mut HashMap<String, (String, String)>,
+) {
+    let mut lookups = 0usize;
+    for puuid in puuids {
+        let key = puuid.to_lowercase();
+        if map.contains_key(&key) {
+            continue;
+        }
+        if let Some(cached) = cached_revealed_name(&key) {
+            if let Some(name) = cached {
+                map.insert(key, name);
+            }
+            continue;
+        }
+        if lookups >= REVEAL_MAX_LOOKUPS {
+            break;
+        }
+        lookups += 1;
+        let name = reveal_name_from_history(client, shard, headers, puuid).await;
+        store_revealed_name(&key, name.clone());
+        if let Some(name) = name {
+            map.insert(key, name);
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1129,5 +1310,37 @@ async fn build_pregame_response(
         self_puuid: Some(self_puuid.to_string()),
         ally_side,
         players,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_incognito_placeholder_names() {
+        for name in ["Player", "player 3", "Player12", "プレイヤー2", "  "] {
+            assert!(is_generic_name(name), "{name} should be generic");
+        }
+        for name in ["TenZ", "PlayerOne", "Streamer"] {
+            assert!(!is_generic_name(name), "{name} should be a real name");
+        }
+    }
+
+    #[test]
+    fn prefers_resolved_name_over_masked_identity() {
+        let mut map = HashMap::new();
+        map.insert(
+            "abc".to_string(),
+            ("RealName".to_string(), "JP1".to_string()),
+        );
+        let payload = serde_json::json!({
+            "Subject": "abc",
+            "PlayerIdentity": { "GameName": "Player 4", "TagLine": "XXXX" }
+        });
+        assert_eq!(
+            resolve_player_name(&map, "ABC", &payload),
+            ("RealName".to_string(), "JP1".to_string())
+        );
     }
 }
