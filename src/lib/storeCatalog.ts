@@ -4,7 +4,7 @@ import type {
   StoreSkinAsset,
 } from "../types/valorant";
 
-const CACHE_KEY = "vt:store_catalog_v1";
+const CACHE_KEY = "vt:store_catalog_v2";
 const CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const API_BASE = "https://valorant-api.com/v1";
 const LANGUAGE = "ja-JP";
@@ -29,6 +29,7 @@ interface RawSkin {
 interface RawWeapon {
   uuid?: string;
   displayName?: string;
+  displayIcon?: string | null;
   skins?: RawSkin[];
 }
 
@@ -106,10 +107,15 @@ export async function loadStoreCatalog(): Promise<StoreCatalog> {
   for (const weapon of weapons) {
     for (const skin of weapon.skins ?? []) {
       if (!skin.uuid || !skin.displayName) continue;
+      // The standard skin's own `displayicon.png` is a placeholder "X" image
+      // (HTTP 200), so use the weapon render instead.
+      const isStandard = /スタンダード|standard|default/i.test(skin.displayName);
       const asset: StoreSkinAsset = {
         uuid: skin.uuid,
         name: skin.displayName,
-        icon: skin.displayIcon ?? skin.levels?.[0]?.displayIcon ?? "",
+        icon: isStandard
+          ? (weapon.displayIcon ?? "")
+          : (skin.displayIcon ?? skin.levels?.[0]?.displayIcon ?? ""),
         weaponName: weapon.displayName ?? "",
       };
       catalog.skinsById[skin.uuid] = asset;

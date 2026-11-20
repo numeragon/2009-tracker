@@ -678,7 +678,13 @@ function PlayerLockerTooltip({
                       {section.weapons.map(({ weaponEntry, weapon, skin }) => {
                         const skinName = skin?.name ?? "デフォルト";
                         const weaponName = weapon?.displayName ?? "";
-                        const icon = skin?.icon || weapon?.displayIcon || "";
+                        // Standard skins ship a placeholder "X" image, so
+                        // show the weapon render for them.
+                        const isStandardSkin =
+                          !skin || /スタンダード|standard|default/i.test(skin.name);
+                        const icon = isStandardSkin
+                          ? (weapon?.displayIcon || "")
+                          : (skin?.icon || weapon?.displayIcon || "");
                         return (
                           <div
                             key={weaponEntry.weaponId}
