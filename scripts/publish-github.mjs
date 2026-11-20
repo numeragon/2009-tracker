@@ -134,7 +134,7 @@ async function main() {
         tag_name: tag,
         target_commitish: "main",
         name: `#2009 tracker ${tag}`,
-        body: `# #2009 tracker ${tag}\n- ロッカー表示の修正: 試合内の全プレイヤー分の装備スキンを返す pregame/core-game loadouts API に切り替え（従来の per-player API は自分のPUUID専用のため他人は取得できませんでした）\n- 匿名解除の修正\n  - 解決済みの名前をPUUID単位で永続キャッシュ（name_cache.json）\n  - 未解決の匿名プレイヤーは HenrikDev のPUUID検索で実名を取得（最大5人/更新・結果は永久キャッシュ）\n  - 実名取得時は「匿名解除」バッジを表示\n- ライブ画面のランク/RR/ピーク/勝率/K/D/HS とリーダーボードを Riot 直のAPIに置き換え（HenrikDevのレートリミット対策）\n  - 名前#タグ検索と試合履歴のみ HenrikDev を使用\n- 多重起動を防止（トレイ格納中の再起動で既存ウィンドウを復元）\n- クロスヘア取得の HTTP 403 / 500 を修正\n- ショップ: ストア取得の HTTP 404 を修正（v3 + シャードフォールバック）・複数Riotアカウント対応\n- ロビー内のパーティメンバー表示（リーダー / 準備完了 / ランク付き）\n- ショップ確認: デイリーストア・ナイトマーケット・注目バンドル・VP/RP 残高\n- エージェント選択中に相手チームのピック状況を一覧表示\n- 試合開始前に自分のチームの先行・後攻を表示`,
+        body: `# #2009 tracker ${tag}\n- ロッカー表示の改善: カードを横に拡大（600px・5列、狭い画面は自動で4/3列）して武器一覧が見切れないように調整。スキン画像が読み込めない場合は武器のデフォルト画像へフォールバック\n- ロッカー表示の修正: 試合内の全プレイヤー分の装備スキンを返す pregame/core-game loadouts API に切り替え（従来の per-player API は自分のPUUID専用のため他人は取得できませんでした）\n- 匿名解除の修正\n  - 解決済みの名前をPUUID単位で永続キャッシュ（name_cache.json）\n  - 未解決の匿名プレイヤーは HenrikDev のPUUID検索で実名を取得（最大5人/更新・結果は永久キャッシュ）\n  - 実名取得時は「匿名解除」バッジを表示\n- ライブ画面のランク/RR/ピーク/勝率/K/D/HS とリーダーボードを Riot 直のAPIに置き換え（HenrikDevのレートリミット対策）\n  - 名前#タグ検索と試合履歴のみ HenrikDev を使用\n- 多重起動を防止（トレイ格納中の再起動で既存ウィンドウを復元）\n- クロスヘア取得の HTTP 403 / 500 を修正\n- ショップ: ストア取得の HTTP 404 を修正（v3 + シャードフォールバック）・複数Riotアカウント対応\n- ロビー内のパーティメンバー表示（リーダー / 準備完了 / ランク付き）\n- ショップ確認: デイリーストア・ナイトマーケット・注目バンドル・VP/RP 残高\n- エージェント選択中に相手チームのピック状況を一覧表示\n- 試合開始前に自分のチームの先行・後攻を表示`,
         draft: false,
         prerelease: false,
       }),
@@ -171,7 +171,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `#2009 tracker v${version} - ロッカー表示の修正（試合ロッカーAPI）・匿名解除の修正（永続キャッシュ＋PUUID検索）・Riot直API化・多重起動防止・クロスヘア/ショップ修正`,
+    notes: `#2009 tracker v${version} - ロッカーを横に拡大（600px/5列）・画像フォールバック・試合ロッカーAPI・匿名解除・Riot直API化・多重起動防止`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {
