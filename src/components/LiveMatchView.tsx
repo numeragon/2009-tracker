@@ -439,7 +439,46 @@ interface LockerAnchor {
   placement: "below" | "above";
 }
 
-const LOCKER_WIDTH = 430;
+const LOCKER_WIDTH = 600;
+
+/** Image with a weapon-render fallback for skins whose art is missing. */
+function LockerImage({
+  primary,
+  fallback,
+  className,
+}: {
+  primary: string;
+  fallback?: string;
+  className?: string;
+}) {
+  const [src, setSrc] = useState(primary);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setSrc(primary);
+    setFailed(false);
+  }, [primary]);
+
+  if (failed || !src) {
+    return <span className="text-[10px] text-[#3a3a3a]">—</span>;
+  }
+
+  return (
+    <img
+      src={src}
+      alt=""
+      loading="lazy"
+      className={className}
+      onError={() => {
+        if (fallback && fallback !== src) {
+          setSrc(fallback);
+        } else {
+          setFailed(true);
+        }
+      }}
+    />
+  );
+}
 
 /**
  * Hover card that mirrors the in-game locker: the player's equipped skin for
@@ -508,7 +547,8 @@ function PlayerLockerTooltip({
     anchor.placement === "below"
       ? window.innerHeight - anchor.bottom - 20
       : anchor.top - 20;
-  const maxHeight = Math.max(180, Math.min(430, available));
+  const maxHeight = Math.max(180, Math.min(520, available));
+  const columns = width >= 560 ? 5 : width >= 460 ? 4 : 3;
   const card = buildPlayerCardUrls(anchor.player.cardId || undefined);
   const loading = !loadoutError && loadouts === null;
   const playerLoadout =
@@ -568,7 +608,10 @@ function PlayerLockerTooltip({
               装備情報が見つかりませんでした。
             </p>
           ) : (
-            <div className="grid min-h-0 flex-1 grid-cols-3 gap-2 overflow-y-auto pr-1">
+            <div
+              className="grid min-h-0 flex-1 gap-2 overflow-y-auto pr-1"
+              style={{ gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))` }}
+            >
               {weapons.map((weaponEntry) => {
                 const weapon =
                   assets.weaponsById[weaponEntry.weaponId.toLowerCase()];
@@ -590,16 +633,11 @@ function PlayerLockerTooltip({
                     className="rounded-[8px] border border-[rgba(255,255,255,0.06)] bg-black/60 p-2"
                   >
                     <div className="flex h-14 items-center justify-center">
-                      {icon ? (
-                        <img
-                          src={icon}
-                          alt=""
-                          loading="lazy"
-                          className="max-h-14 max-w-full object-contain"
-                        />
-                      ) : (
-                        <span className="text-[10px] text-[#3a3a3a]">—</span>
-                      )}
+                      <LockerImage
+                        primary={icon}
+                        fallback={weapon?.displayIcon}
+                        className="max-h-14 max-w-full object-contain"
+                      />
                     </div>
                     <p
                       className="mt-1.5 truncate text-[10px] text-[#ededed]"
