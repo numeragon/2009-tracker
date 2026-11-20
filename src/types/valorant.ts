@@ -427,6 +427,9 @@ export interface LiveMatchPlayerRaw {
   /** Party lobby only */
   partyReady?: boolean | null;
   isPartyOwner?: boolean | null;
+  /** Party ID / membership (your premade group). */
+  partyId?: string | null;
+  isPartyMember?: boolean;
 }
 
 export interface LiveMatchResponse {

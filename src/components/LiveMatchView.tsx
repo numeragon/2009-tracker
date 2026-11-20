@@ -112,6 +112,7 @@ function formatSavedTime(ts: number): string {
 interface LiveTeamTableProps {
   title: string;
   isAllyTable: boolean;
+  isLobby?: boolean;
   players: LiveMatchPlayerRaw[];
   ranksByPuuid: Record<string, LivePlayerRankInfo | undefined>;
   isRanksLoading: boolean;
@@ -130,6 +131,7 @@ interface LiveTeamTableProps {
 function LiveTeamTable({
   title,
   isAllyTable,
+  isLobby = false,
   players,
   ranksByPuuid,
   isRanksLoading,
@@ -139,6 +141,7 @@ function LiveTeamTable({
   onHoverPlayer,
   onLeavePlayer,
 }: LiveTeamTableProps) {
+  const partyCount = players.filter((p) => p.isPartyMember).length;
   return (
     <section className="vt-panel overflow-hidden">
       <div className="px-5 py-3.5 flex items-center justify-between vt-hairline-b bg-[#0a0a0a]">
@@ -152,6 +155,14 @@ function LiveTeamTable({
         </div>
         <span className="font-num text-xs text-[#5c5c5c]">{players.length} 人</span>
       </div>
+
+      {!isLobby && partyCount > 1 && (
+        <div className="px-5 py-1.5 vt-hairline-b bg-[#0a0a0a]">
+          <span className="text-[10px] px-1.5 py-0.5 rounded border border-[rgba(255,255,255,0.16)] text-[#8f8f8f]">
+            パーティ {partyCount} 人
+          </span>
+        </div>
+      )}
 
       <div className="overflow-x-auto">
         <table className="w-full text-left border-collapse min-w-[740px]">
@@ -274,6 +285,12 @@ function LiveTeamTable({
                           {p.isPartyOwner && (
                             <span className="text-[9px] px-1 py-0.2 rounded border border-[rgba(255,255,255,0.16)] text-[#8f8f8f] shrink-0">
                               リーダー
+                            </span>
+                          )}
+
+                          {!isLobby && p.isPartyMember && !p.isSelf && (
+                            <span className="text-[9px] px-1 py-0.2 rounded border border-[rgba(255,255,255,0.16)] text-[#8f8f8f] shrink-0">
+                              パーティ
                             </span>
                           )}
 
@@ -788,6 +805,7 @@ export function LiveMatchView({
   );
 
   const fetchSeqRef = useRef(0);
+  const inFlightRef = useRef(false);
   const ranksRef = useRef(ranksByPuuid);
   useEffect(() => {
     ranksRef.current = ranksByPuuid;
@@ -826,6 +844,10 @@ export function LiveMatchView({
 
   const loadLiveMatch = useCallback(
     async (options?: { manual?: boolean }) => {
+      // The agent-select poll runs every 2s; skip a tick if the previous
+      // request is still in flight (manual refreshes always go through).
+      if (inFlightRef.current && !options?.manual) return;
+      inFlightRef.current = true;
       const seq = ++fetchSeqRef.current;
       if (options?.manual || !liveData) {
         setIsLoading(true);
@@ -881,6 +903,8 @@ export function LiveMatchView({
         if (seq !== fetchSeqRef.current) return;
         setErrorText(err instanceof Error ? err.message : String(err));
         setIsLoading(false);
+      } finally {
+        if (seq === fetchSeqRef.current) inFlightRef.current = false;
       }
     },
     [apiKey, defaultRegion, liveData],
@@ -895,14 +919,17 @@ export function LiveMatchView({
     }
   }, [loadLiveMatch]);
 
-  // Silent background auto-refresh when on the realtime tab & LiveMatchView is visible
+  // Silent background auto-refresh when on the realtime tab & LiveMatchView is visible.
+  // Agent select changes constantly, so poll it near-real-time.
+  const liveStatus = liveData?.status;
   useEffect(() => {
     if (!autoRefresh || !isActiveTab || selectedTabId !== "live") return;
+    const interval = liveStatus === "PREGAME" ? 2_000 : 15_000;
     const timer = window.setInterval(() => {
       void loadLiveMatch();
-    }, 15_000);
+    }, interval);
     return () => window.clearInterval(timer);
-  }, [autoRefresh, isActiveTab, selectedTabId, loadLiveMatch]);
+  }, [autoRefresh, isActiveTab, selectedTabId, loadLiveMatch, liveStatus]);
 
   // Save / Update Current Match as a Persistent Sub-Tab
   const handleSaveCurrentMatchTab = () => {
@@ -1125,7 +1152,7 @@ export function LiveMatchView({
                   : "bg-[#0a0a0a] border-[rgba(255,255,255,0.09)] text-[#8f8f8f] hover:text-[#ededed]"
               }`}
             >
-              自動更新 (15秒): {autoRefresh ? "ON" : "OFF"}
+              自動更新 ({liveStatus === "PREGAME" ? "2" : "15"}秒): {autoRefresh ? "ON" : "OFF"}
             </button>
 
             <button
@@ -1251,6 +1278,10 @@ export function LiveMatchView({
                 <div className="flex items-center gap-2.5">
                   <h2 className="text-xs font-medium text-[#ededed]">相手のピック</h2>
                   <span className="text-[10px] text-[#5c5c5c]">エージェント選択中</span>
+                  <span className="flex items-center gap-1.5 text-[10px] text-[#8f8f8f]">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[var(--semantic-win)] animate-pulse" />
+                    2秒ごと更新
+                  </span>
                 </div>
                 <span className="font-num text-[10px] uppercase text-[#5c5c5c]">
                   {enemies.filter((p) => p.agentId).length} / {enemies.length} picked
@@ -1270,8 +1301,8 @@ export function LiveMatchView({
                         : "未選択";
                   return (
                     <div
-                      key={p.puuid}
-                      className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-black px-3 py-2.5 flex items-center gap-2.5 min-w-0"
+                      key={`${p.puuid}:${p.agentId}:${p.selectionState}`}
+                      className="rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-black px-3 py-2.5 flex items-center gap-2.5 min-w-0 vt-animate-in"
                     >
                       {agent?.displayIcon ? (
                         <img
@@ -1308,6 +1339,7 @@ export function LiveMatchView({
             <LiveTeamTable
               title={isLobby ? "パーティ（ロビー）" : "味方チーム"}
               isAllyTable={true}
+              isLobby={isLobby}
               players={allies}
               ranksByPuuid={viewRanks}
               isRanksLoading={!activeSavedTab && isRanksLoading}

@@ -36,6 +36,10 @@ pub struct LiveMatchPlayerRaw {
     /// Party lobby only: ready check state / party owner.
     pub party_ready: Option<bool>,
     pub is_party_owner: Option<bool>,
+    /// Party ID shared by the player's premade group (only known for your own
+    /// party, since Riot does not expose other parties during a match).
+    pub party_id: Option<String>,
+    pub is_party_member: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -566,6 +570,31 @@ fn henrik_region() -> String {
         .unwrap_or_default()
 }
 
+const HENRIK_MISS_TTL: Duration = Duration::from_secs(600);
+
+static HENRIK_MISSES: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+
+fn henrik_misses() -> &'static Mutex<HashMap<String, Instant>> {
+    HENRIK_MISSES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Agent select polls every 2 seconds; without a negative cache an unresolved
+/// player would burn a HenrikDev request on every tick.
+fn henrik_miss_recent(puuid: &str) -> bool {
+    henrik_misses()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.get(puuid).copied())
+        .map(|at| at.elapsed() < HENRIK_MISS_TTL)
+        .unwrap_or(false)
+}
+
+fn mark_henrik_miss(puuid: &str) {
+    if let Ok(mut guard) = henrik_misses().lock() {
+        guard.insert(puuid.to_string(), Instant::now());
+    }
+}
+
 /// Riot's public name lookup by PUUID is not affected by the incognito display
 /// filter, so this is what actually reveals hidden names. Only called for
 /// players that every local source failed to resolve, and the result is stored
@@ -703,9 +732,14 @@ async fn resolve_names(
             if lookups >= 5 {
                 break;
             }
+            if henrik_miss_recent(&key) {
+                continue;
+            }
             lookups += 1;
             if let Some(pair) = henrik_account_name(remote_client, puuid, &api_key).await {
                 map.insert(key, pair);
+            } else {
+                mark_henrik_miss(&key);
             }
         }
     }
@@ -910,6 +944,101 @@ fn is_zero_guid(value: &str) -> bool {
 
 /// Reads the current party (client lobby) roster. The player stays "IN_MENU"
 /// while waiting, but we can still list everyone who is in the lobby.
+#[derive(Default, Clone)]
+struct PartyMembers {
+    party_id: Option<String>,
+    members: HashSet<String>,
+    fetched_at: Option<Instant>,
+}
+
+static LAST_PARTY: OnceLock<Mutex<PartyMembers>> = OnceLock::new();
+
+fn last_party() -> &'static Mutex<PartyMembers> {
+    LAST_PARTY.get_or_init(|| Mutex::new(PartyMembers::default()))
+}
+
+fn cached_party() -> PartyMembers {
+    last_party()
+        .lock()
+        .map(|party| party.clone())
+        .unwrap_or_default()
+}
+
+/// Your own party id + member PUUIDs. Riot does not expose other players'
+/// parties in the live match payload, so this is the group you queued with.
+async fn fetch_party_members(
+    client: &reqwest::Client,
+    glz_base: &str,
+    headers: &HeaderMap,
+    self_puuid: &str,
+) -> PartyMembers {
+    let cached = cached_party();
+    if cached.party_id.is_some()
+        && cached
+            .fetched_at
+            .map(|at| at.elapsed() < Duration::from_secs(10))
+            .unwrap_or(false)
+    {
+        return cached;
+    }
+
+    let player_url = format!("{glz_base}/parties/v1/players/{self_puuid}");
+    let party_id = match client
+        .get(&player_url)
+        .headers(headers.clone())
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<PartyPlayerResp>().await {
+            Ok(p) => p.current_party_id.unwrap_or_default(),
+            Err(_) => String::new(),
+        },
+        _ => String::new(),
+    };
+
+    if is_zero_guid(&party_id) {
+        return cached_party();
+    }
+
+    let party_url = format!("{glz_base}/parties/v1/parties/{party_id}");
+    let party = match client
+        .get(&party_url)
+        .headers(headers.clone())
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+            Ok(v) => v,
+            Err(_) => return cached_party(),
+        },
+        _ => return cached_party(),
+    };
+
+    let members: HashSet<String> = party
+        .get("Members")
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|m| {
+                    m.get("Subject")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_lowercase())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let result = PartyMembers {
+        party_id: Some(party_id),
+        members,
+        fetched_at: Some(Instant::now()),
+    };
+    if let Ok(mut guard) = last_party().lock() {
+        *guard = result.clone();
+    }
+    result
+}
+
 async fn fetch_party_snapshot(
     remote_client: &reqwest::Client,
     shard: &str,
@@ -967,6 +1096,14 @@ async fn fetch_party_snapshot(
         .iter()
         .filter_map(|p| p.get("Subject").and_then(|v| v.as_str()).map(String::from))
         .collect();
+    let member_set: HashSet<String> = puuids.iter().map(|p| p.to_lowercase()).collect();
+    if let Ok(mut guard) = last_party().lock() {
+        *guard = PartyMembers {
+            party_id: Some(party_id.clone()),
+            members: member_set,
+            fetched_at: Some(Instant::now()),
+        };
+    }
     let name_map = resolve_names(remote_client, shard, headers, &puuids).await;
 
     let self_lower = self_puuid.to_lowercase();
@@ -1017,6 +1154,8 @@ async fn fetch_party_snapshot(
                 .unwrap_or(0),
             party_ready: p.get("IsReady").and_then(|v| v.as_bool()),
             is_party_owner: p.get("IsOwner").and_then(|v| v.as_bool()),
+            party_id: Some(party_id.clone()),
+            is_party_member: true,
         });
     }
 
@@ -2471,6 +2610,8 @@ async fn build_core_game_response(
         .filter_map(|p| p.get("Subject").and_then(|v| v.as_str()).map(String::from))
         .collect();
 
+    let glz_base = format!("https://glz-{glz_region}-1.{shard}.a.pvp.net");
+    let party = fetch_party_members(remote_client, &glz_base, headers, self_puuid).await;
     let name_map = resolve_names(remote_client, shard, headers, &puuids).await;
 
     let mut players = Vec::new();
@@ -2510,6 +2651,7 @@ async fn build_core_game_response(
             .to_string();
 
         let (game_name, tag_line) = resolve_player_name(&name_map, &puuid, p);
+        let is_party_member = party.members.contains(&puuid.to_lowercase());
 
         players.push(LiveMatchPlayerRaw {
             puuid,
@@ -2531,6 +2673,12 @@ async fn build_core_game_response(
             pregame_tier: 0,
             party_ready: None,
             is_party_owner: None,
+            party_id: if is_party_member {
+                party.party_id.clone()
+            } else {
+                None
+            },
+            is_party_member,
         });
     }
 
@@ -2630,6 +2778,8 @@ async fn build_pregame_response(
         .filter_map(|(_, p)| p.get("Subject").and_then(|v| v.as_str()).map(String::from))
         .collect();
 
+    let glz_base = format!("https://glz-{glz_region}-1.{shard}.a.pvp.net");
+    let party = fetch_party_members(remote_client, &glz_base, headers, self_puuid).await;
     let name_map = resolve_names(remote_client, shard, headers, &puuids).await;
 
     let mut players = Vec::new();
@@ -2665,6 +2815,7 @@ async fn build_pregame_response(
             .to_string();
 
         let (game_name, tag_line) = resolve_player_name(&name_map, &puuid, p);
+        let is_party_member = party.members.contains(&puuid.to_lowercase());
 
         players.push(LiveMatchPlayerRaw {
             puuid,
@@ -2693,6 +2844,12 @@ async fn build_pregame_response(
                 .unwrap_or(0),
             party_ready: None,
             is_party_owner: None,
+            party_id: if is_party_member {
+                party.party_id.clone()
+            } else {
+                None
+            },
+            is_party_member,
         });
     }
 
