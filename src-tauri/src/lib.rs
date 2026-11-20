@@ -63,6 +63,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             window_close_or_tray,
             live_match::fetch_live_match,
+            live_match::fetch_pregame_picks,
             live_match::fetch_player_loadout,
             live_match::fetch_match_loadouts,
             live_match::fetch_live_player_stats,

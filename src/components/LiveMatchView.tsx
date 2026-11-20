@@ -23,6 +23,7 @@ import type {
 import {
   fetchLiveMatchFromClient,
   fetchMatchLoadouts,
+  fetchPregamePicks,
   fetchPlayerRankByPuuid,
   formatLiveModeLabel,
   normalizeRegion,
@@ -920,16 +921,76 @@ export function LiveMatchView({
   }, [loadLiveMatch]);
 
   // Silent background auto-refresh when on the realtime tab & LiveMatchView is visible.
-  // Agent select changes constantly, so poll it near-real-time.
+  // Agent-select picks are handled by the 1s poll below; the heavier full
+  // refresh (names/ranks/party) only needs to run occasionally.
   const liveStatus = liveData?.status;
   useEffect(() => {
     if (!autoRefresh || !isActiveTab || selectedTabId !== "live") return;
-    const interval = liveStatus === "PREGAME" ? 2_000 : 15_000;
+    const interval = liveStatus === "PREGAME" ? 5_000 : 15_000;
     const timer = window.setInterval(() => {
       void loadLiveMatch();
     }, interval);
     return () => window.clearInterval(timer);
   }, [autoRefresh, isActiveTab, selectedTabId, loadLiveMatch, liveStatus]);
+
+  // Fast 1s poll for both teams' agent picks while in agent select.
+  useEffect(() => {
+    if (
+      !autoRefresh ||
+      !isActiveTab ||
+      selectedTabId !== "live" ||
+      liveStatus !== "PREGAME"
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let inFlight = false;
+
+    const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const res = await fetchPregamePicks();
+        if (cancelled || !res.ok || !res.matchId) return;
+        setLiveData((prev) => {
+          if (!prev || prev.status !== "PREGAME" || prev.matchId !== res.matchId) {
+            return prev;
+          }
+          let changed = false;
+          const players = prev.players.map((player) => {
+            const pick = res.picks.find(
+              (item) => item.puuid === player.puuid.toLowerCase(),
+            );
+            if (!pick) return player;
+            if (
+              pick.agentId === player.agentId &&
+              pick.selectionState === player.selectionState
+            ) {
+              return player;
+            }
+            changed = true;
+            return {
+              ...player,
+              agentId: pick.agentId,
+              selectionState: pick.selectionState,
+            };
+          });
+          return changed ? { ...prev, players } : prev;
+        });
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    void tick();
+    const timer = window.setInterval(() => {
+      void tick();
+    }, 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [autoRefresh, isActiveTab, selectedTabId, liveStatus]);
 
   // Save / Update Current Match as a Persistent Sub-Tab
   const handleSaveCurrentMatchTab = () => {
@@ -1152,7 +1213,7 @@ export function LiveMatchView({
                   : "bg-[#0a0a0a] border-[rgba(255,255,255,0.09)] text-[#8f8f8f] hover:text-[#ededed]"
               }`}
             >
-              自動更新 ({liveStatus === "PREGAME" ? "2" : "15"}秒): {autoRefresh ? "ON" : "OFF"}
+              自動更新 ({liveStatus === "PREGAME" ? "5" : "15"}秒): {autoRefresh ? "ON" : "OFF"}
             </button>
 
             <button
@@ -1280,7 +1341,7 @@ export function LiveMatchView({
                   <span className="text-[10px] text-[#5c5c5c]">エージェント選択中</span>
                   <span className="flex items-center gap-1.5 text-[10px] text-[#8f8f8f]">
                     <span className="w-1.5 h-1.5 rounded-full bg-[var(--semantic-win)] animate-pulse" />
-                    2秒ごと更新
+                    1秒ごと更新
                   </span>
                 </div>
                 <span className="font-num text-[10px] uppercase text-[#5c5c5c]">

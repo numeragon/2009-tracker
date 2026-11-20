@@ -533,6 +533,18 @@ export interface MatchLoadoutsResponse {
   }>;
 }
 
+/** Fast agent-select picks poll (1s). */
+export interface PregamePicksResponse {
+  ok: boolean;
+  message: string | null;
+  matchId: string | null;
+  picks: Array<{
+    puuid: string;
+    agentId: string;
+    selectionState: string;
+  }>;
+}
+
 export interface TierAsset {
   tier: number;
   tierName: string;

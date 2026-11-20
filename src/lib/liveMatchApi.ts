@@ -4,6 +4,7 @@ import type {
   LivePlayerRankInfo,
   LivePlayerStatsResponse,
   MatchLoadoutsResponse,
+  PregamePicksResponse,
   Region,
 } from "../types/valorant";
 import { getCachedData, setCachedData } from "./storage";
@@ -74,11 +75,29 @@ export async function fetchLiveMatchFromClient(
 }
 
 /**
+ * Fast agent-select refresh: only the pregame match document, so the UI can
+ * poll every second while both teams pick their agents.
+ */
+export async function fetchPregamePicks(): Promise<PregamePicksResponse> {
+  const empty: PregamePicksResponse = {
+    ok: false,
+    message: null,
+    matchId: null,
+    picks: [],
+  };
+  if (!isTauriRuntime()) return empty;
+  try {
+    return await invoke<PregamePicksResponse>("fetch_pregame_picks");
+  } catch {
+    return empty;
+  }
+}
+
+/**
  * Rank / K/D / headshot stats straight from Riot's own pd endpoints
  * (`mmr` + `match-history` + `match-details`). This replaces the HenrikDev
  * lookup so live polling no longer hits a third-party rate limit.
- */
-export async function fetchPlayerRankByPuuid(
+ */export async function fetchPlayerRankByPuuid(
   puuid: string,
   region: Region,
 ): Promise<LivePlayerRankInfo | null> {

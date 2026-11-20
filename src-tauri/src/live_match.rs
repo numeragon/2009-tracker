@@ -2348,6 +2348,191 @@ pub async fn fetch_player_loadout(
     Ok(response)
 }
 
+/* ---------- Fast agent-select picks poll ---------- */
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PregamePickDto {
+    pub puuid: String,
+    pub agent_id: String,
+    pub selection_state: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PregamePicksResponse {
+    pub ok: bool,
+    pub message: Option<String>,
+    pub match_id: Option<String>,
+    pub picks: Vec<PregamePickDto>,
+}
+
+impl PregamePicksResponse {
+    fn error(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            message: Some(message.into()),
+            match_id: None,
+            picks: Vec::new(),
+        }
+    }
+}
+
+/// Lightweight agent-select refresh: only the pregame match document, so the
+/// UI can poll every second without redoing name/party/rank resolution.
+#[tauri::command]
+pub async fn fetch_pregame_picks() -> Result<PregamePicksResponse, String> {
+    let Some(lock) = read_lockfile() else {
+        return Ok(PregamePicksResponse::error(
+            "VALORANT（Riot Client）が起動していません。",
+        ));
+    };
+
+    let local_client = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("ローカルHTTPクライアント初期化エラー: {e}"))?;
+    let remote_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("HTTPクライアント初期化エラー: {e}"))?;
+
+    let basic = BASE64.encode(format!("riot:{}", lock.password));
+    let token_url = format!("https://127.0.0.1:{}/entitlements/v1/token", lock.port);
+    let token = match local_client
+        .get(&token_url)
+        .header(AUTHORIZATION, format!("Basic {basic}"))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<EntitlementsTokenResp>().await {
+            Ok(data) => data,
+            Err(_) => {
+                return Ok(PregamePicksResponse::error(
+                    "Riot Client の認証情報を解析できませんでした。",
+                ));
+            }
+        },
+        _ => {
+            return Ok(PregamePicksResponse::error(
+                "Riot Client にログインしていません。",
+            ));
+        }
+    };
+
+    let log_info = scan_shooter_game_log();
+    let (fb_glz, fb_shard) = fallback_glz_and_shard("ap");
+    let glz_region = log_info.glz_region.unwrap_or(fb_glz);
+    let shard = log_info.shard.unwrap_or(fb_shard);
+    let client_version = resolve_client_version(&remote_client, log_info.client_version).await;
+
+    let mut headers = HeaderMap::new();
+    if let Ok(v) = HeaderValue::from_str(&format!("Bearer {}", token.access_token)) {
+        headers.insert(AUTHORIZATION, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&token.token) {
+        headers.insert("X-Riot-Entitlements-JWT", v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&client_version) {
+        headers.insert("X-Riot-ClientVersion", v);
+    }
+    headers.insert(
+        "X-Riot-ClientPlatform",
+        HeaderValue::from_static(CLIENT_PLATFORM_B64),
+    );
+
+    let glz_base = format!("https://glz-{glz_region}-1.{shard}.a.pvp.net");
+    let player_url = format!("{glz_base}/pregame/v1/players/{}", token.subject);
+    let match_id = match remote_client
+        .get(&player_url)
+        .headers(headers.clone())
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<PlayerMatchResp>().await {
+            Ok(p) => p.match_id.unwrap_or_default(),
+            Err(_) => String::new(),
+        },
+        _ => String::new(),
+    };
+    if match_id.is_empty() {
+        return Ok(PregamePicksResponse::error(
+            "エージェント選択中ではありません。",
+        ));
+    }
+
+    let match_url = format!("{glz_base}/pregame/v1/matches/{match_id}");
+    let json = match remote_client
+        .get(&match_url)
+        .headers(headers.clone())
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => match r.json::<Value>().await {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(PregamePicksResponse::error(format!(
+                    "ピック情報の解析に失敗しました: {e}"
+                )));
+            }
+        },
+        _ => {
+            return Ok(PregamePicksResponse::error(
+                "ピック情報を取得できませんでした。",
+            ));
+        }
+    };
+
+    let mut picks = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut collect = |list: &Vec<Value>| {
+        for p in list {
+            let subject = p.get("Subject").and_then(|v| v.as_str()).unwrap_or("");
+            if subject.is_empty() || !seen.insert(subject.to_lowercase()) {
+                continue;
+            }
+            picks.push(PregamePickDto {
+                puuid: subject.to_lowercase(),
+                agent_id: p
+                    .get("CharacterID")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                selection_state: p
+                    .get("CharacterSelectionState")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            });
+        }
+    };
+
+    if let Some(teams) = json.get("Teams").and_then(|v| v.as_array()) {
+        for team in teams {
+            if let Some(list) = team.get("Players").and_then(|v| v.as_array()) {
+                collect(list);
+            }
+        }
+    }
+    for key in ["AllyTeam", "EnemyTeam"] {
+        if let Some(list) = json
+            .get(key)
+            .and_then(|v| v.get("Players"))
+            .and_then(|v| v.as_array())
+        {
+            collect(list);
+        }
+    }
+
+    Ok(PregamePicksResponse {
+        ok: true,
+        message: None,
+        match_id: Some(match_id),
+        picks,
+    })
+}
+
 #[tauri::command]
 pub async fn fetch_live_match(
     region_fallback: String,
