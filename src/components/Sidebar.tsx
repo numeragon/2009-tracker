@@ -1,4 +1,4 @@
-import { Crosshair, Disc, Film, Home, Pin, Radio, Settings, ShoppingBag, Trophy, X } from "lucide-react";
+import { Crosshair, Disc, Film, Home, KeyRound, Pin, Radio, Settings, ShoppingBag, Trophy, X } from "lucide-react";
 import type { Region, SavedPlayerEntry, ValorantAssetsCatalog } from "../types/valorant";
 import { playerKey } from "../lib/storage";
 import { resolveTierAsset } from "../lib/valorantAssets";
@@ -14,6 +14,7 @@ export type AppRoute =
   | "profile"
   | "match-detail"
   | "leaderboard"
+  | "twofactor"
   | "settings";
 
 interface SidebarProps {
@@ -26,7 +27,16 @@ interface SidebarProps {
   history: SavedPlayerEntry[];
   assets: ValorantAssetsCatalog;
   onNavigate: (
-    route: "home" | "live" | "crosshair" | "store" | "recorder" | "clips" | "leaderboard" | "settings",
+    route:
+      | "home"
+      | "live"
+      | "crosshair"
+      | "store"
+      | "recorder"
+      | "clips"
+      | "leaderboard"
+      | "twofactor"
+      | "settings",
   ) => void;
   onSelectSavedPlayer: (name: string, tag: string, region: Region) => void;
   onRemoveFavorite: (entry: SavedPlayerEntry) => void;
@@ -50,7 +60,16 @@ export function Sidebar({
   onClearHistory,
 }: SidebarProps) {
   const navItems: Array<{
-    id: "home" | "live" | "crosshair" | "store" | "recorder" | "clips" | "leaderboard" | "settings";
+    id:
+      | "home"
+      | "live"
+      | "crosshair"
+      | "store"
+      | "recorder"
+      | "clips"
+      | "leaderboard"
+      | "twofactor"
+      | "settings";
     label: string;
     icon: typeof Home;
     badge?: string;
@@ -70,6 +89,7 @@ export function Sidebar({
     },
     { id: "clips", label: "クリップ編集", icon: Film },
     { id: "leaderboard", label: "リーダーボード", icon: Trophy },
+    { id: "twofactor", label: "2FA 認証", icon: KeyRound },
     { id: "settings", label: "設定", icon: Settings, dot: !hasApiKey },
   ];
 

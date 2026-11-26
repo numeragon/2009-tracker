@@ -1,6 +1,7 @@
 mod live_match;
 mod local_api;
 mod replay;
+mod riot_2fa;
 mod riot_auth;
 
 use tauri::Manager;
@@ -73,6 +74,8 @@ pub fn run() {
             riot_auth::riot_login,
             riot_auth::riot_last_session,
             riot_auth::riot_logout,
+            riot_2fa::riot_2fa_login,
+            riot_2fa::read_riot2fa_accounts,
             replay::host::replay_get_state,
             replay::host::replay_update_config,
             replay::host::replay_toggle_recording,

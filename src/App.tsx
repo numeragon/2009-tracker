@@ -47,6 +47,7 @@ import { LiveMatchView } from "./components/LiveMatchView";
 import { CrosshairView } from "./components/CrosshairView";
 import { StoreView } from "./components/StoreView";
 import { RecorderView } from "./components/RecorderView";
+import { TwoFactorView } from "./components/TwoFactorView";
 import { ClipStudioView } from "./components/ClipStudioView";
 import { WaveDotBackground, type WavePreset } from "./components/WaveDotBackground";
 import { AutoUpdateBanner } from "./components/AutoUpdateBanner";
@@ -340,7 +341,9 @@ export default function App() {
           : profileTab === "maps"
             ? "maps"
             : "overview"
-      : route;
+      : route === "twofactor"
+        ? "settings"
+        : route;
 
   const aggregatedStats = profile ? aggregateProfileStats(profile) : null;
 
@@ -484,6 +487,8 @@ export default function App() {
               onOpenSettings={() => setRoute("settings")}
             />
           )}
+
+          {route === "twofactor" && <TwoFactorView />}
 
           {route === "profile" && (
             <>
