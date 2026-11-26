@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Loader2, ScanEye } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import type {
   LiveMatchPlayerRaw,
   LiveMatchResponse,
@@ -20,7 +20,6 @@ import {
 } from "../lib/liveMatchApi";
 import { loadSettingsSync } from "../lib/storage";
 import {
-  buildPlayerCardUrls,
   loadValorantAssets,
   resolveAgentAsset,
   resolveMapAsset,
@@ -48,8 +47,15 @@ const CATEGORY_ORDER = [
   "Heavy",
 ];
 
+const POPOVER_WIDTH = 620;
+const POPOVER_EST_HEIGHT = 330;
+
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function isPlaceholderName(name: string): boolean {
+  return !name || /^player[\s_-]*\d*$/i.test(name.trim());
 }
 
 /** Browser preview used when the overlay is opened in Vite without Tauri. */
@@ -67,37 +73,40 @@ const DEV_MOCK: LiveMatchResponse | null = import.meta.env.DEV
       selfPuuid: "self",
       allySide: null,
       players: [
-        ["self", "自分", "JP1", true, true, "own"],
-        ["a2", "AllyTwo", "JP2", true, false, "own"],
-        ["a3", "AllyThree", "JP3", true, false, "own"],
-        ["a4", "SoloAlly", "JP4", true, false, null],
-        ["a5", "SoloAlly2", "JP5", true, false, null],
-        ["e1", "EnemyOne", "NA1", false, false, "h:e1"],
-        ["e2", "EnemyTwo", "NA2", false, false, "h:e1"],
-        ["e3", "EnemyThree", "NA3", false, false, "h:e1"],
-        ["e4", "EnemyFour", "NA4", false, false, "h:e4"],
-        ["e5", "EnemyFive", "NA5", false, false, "h:e4"],
-      ].map(([puuid, gameName, tagLine, isAlly, isSelf, partyId]) => ({
-        puuid: puuid as string,
-        gameName: gameName as string,
-        tagLine: tagLine as string,
-        teamId: isAlly ? "Blue" : "Red",
-        isAlly: isAlly as boolean,
-        isSelf: isSelf as boolean,
-        agentId: "",
-        selectionState: "locked",
-        accountLevel: 120,
-        hideAccountLevel: false,
-        isIncognito: false,
-        cardId: "",
-        pregameTier: 16,
-        partyReady: null,
-        isPartyOwner: null,
-        partyId: (partyId as string | null) ?? null,
-        partySize: partyId ? (partyId === "own" ? 3 : 2) : 1,
-        partyInferred: typeof partyId === "string" && partyId.startsWith("h:"),
-        isPartyMember: partyId === "own",
-      })),
+        ["self", "自分", "JP1", true, true, "own", "locked"],
+        ["a2", "AllyTwo", "JP2", true, false, "own", "locked"],
+        ["a3", "AllyThree", "JP3", true, false, "own", "selected"],
+        ["a4", "SoloAlly", "JP4", true, false, null, "locked"],
+        ["a5", "SoloAlly2", "JP5", true, false, null, ""],
+        ["e1", "EnemyOne", "NA1", false, false, "h:e1", "locked"],
+        ["e2", "EnemyTwo", "NA2", false, false, "h:e1", "locked"],
+        ["e3", "EnemyThree", "NA3", false, false, "h:e1", "selected"],
+        ["e4", "EnemyFour", "NA4", false, false, "h:e4", "locked"],
+        ["e5", "EnemyFive", "NA5", false, false, "h:e4", ""],
+      ].map(
+        ([puuid, gameName, tagLine, isAlly, isSelf, partyId, selectionState]) => ({
+          puuid: puuid as string,
+          gameName: gameName as string,
+          tagLine: tagLine as string,
+          teamId: isAlly ? "Blue" : "Red",
+          isAlly: isAlly as boolean,
+          isSelf: isSelf as boolean,
+          agentId: "",
+          selectionState: selectionState as string,
+          accountLevel: 120,
+          hideAccountLevel: false,
+          isIncognito: false,
+          cardId: "",
+          pregameTier: 16,
+          partyReady: null,
+          isPartyOwner: null,
+          partyId: (partyId as string | null) ?? null,
+          partySize: partyId ? (partyId === "own" ? 3 : 2) : 1,
+          partyInferred:
+            typeof partyId === "string" && partyId.startsWith("h:"),
+          isPartyMember: partyId === "own",
+        }),
+      ),
     }
   : null;
 
@@ -191,10 +200,18 @@ export function OverlayView() {
   const [loadouts, setLoadouts] = useState<MatchLoadoutsResponse | null>(null);
   const [hotkeyLabel, setHotkeyLabel] = useState("F8");
   const [hovered, setHovered] = useState<string | null>(null);
+  const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
   const ranksRef = useRef<Record<string, LivePlayerRankInfo | undefined>>({});
   const assetsRef = useRef<ValorantAssetsCatalog>(EMPTY_ASSETS);
+  const hoveredRef = useRef<string | null>(null);
+
+  const handleHover = useCallback((puuid: string | null, rect: DOMRect | null) => {
+    hoveredRef.current = puuid;
+    setHovered(puuid);
+    setHoverRect(rect);
+  }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -347,13 +364,15 @@ export function OverlayView() {
         );
         if (cancelled) return;
         if (!position) {
-          setHovered(null);
+          if (hoveredRef.current !== null) handleHover(null, null);
           return;
         }
         const element = document.elementFromPoint(position.x, position.y);
-        if (element?.closest("[data-overlay-inventory]")) return;
         const row = element?.closest<HTMLElement>("[data-overlay-player]");
-        setHovered(row?.dataset.overlayPlayer ?? null);
+        const next = row?.dataset.overlayPlayer ?? null;
+        if (next !== hoveredRef.current) {
+          handleHover(next, next && row ? row.getBoundingClientRect() : null);
+        }
       } catch {
         // Ignore transient IPC errors.
       }
@@ -363,7 +382,7 @@ export function OverlayView() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [handleHover]);
 
   const players = useMemo(() => {
     const list = live?.players ?? [];
@@ -440,8 +459,31 @@ export function OverlayView() {
         : (a.weapon?.cost ?? 0) - (b.weapon?.cost ?? 0);
     });
 
+  const popoverLeft = hoverRect
+    ? Math.min(
+        Math.max(8, hoverRect.left),
+        Math.max(8, window.innerWidth - POPOVER_WIDTH - 8),
+      )
+    : 8;
+  const spaceBelow = hoverRect
+    ? window.innerHeight - hoverRect.bottom - 8
+    : 0;
+  const placeAbove = Boolean(
+    hoverRect &&
+      spaceBelow < POPOVER_EST_HEIGHT &&
+      hoverRect.top > POPOVER_EST_HEIGHT + 8,
+  );
+  const popoverTop = hoverRect
+    ? placeAbove
+      ? Math.max(8, hoverRect.top - POPOVER_EST_HEIGHT - 8)
+      : Math.min(
+          hoverRect.bottom + 8,
+          Math.max(8, window.innerHeight - POPOVER_EST_HEIGHT - 8),
+        )
+    : 8;
+
   return (
-    <div className="h-screen w-screen bg-[#060606] p-2">
+    <div className="h-screen w-screen overflow-hidden bg-[#060606] p-2">
       <div
         className="flex h-full w-full flex-col overflow-hidden rounded-[14px] border border-[rgba(255,255,255,0.12)] text-[#ededed]"
         style={{ backgroundColor: "rgba(6, 6, 6, 0.96)" }}
@@ -475,136 +517,26 @@ export function OverlayView() {
             </div>
           ) : (
             <>
-          <TeamColumn
-            title="味方チーム"
-            players={allies}
-            labels={allyLabels}
-            ranks={ranks}
-            assets={assets}
-            hovered={hovered}
-            onHover={setHovered}
-          />
-          <TeamColumn
-            title="相手チーム"
-            players={enemies}
-            labels={enemyLabels}
-            ranks={ranks}
-            assets={assets}
-            hovered={hovered}
-            onHover={setHovered}
-          />
-
-          <aside
-            data-overlay-inventory
-            className="flex w-[390px] shrink-0 flex-col overflow-hidden rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-white/[0.02]"
-          >
-            {hoveredPlayer ? (
-              <>
-                <div className="relative shrink-0 border-b border-[rgba(255,255,255,0.08)] px-3 py-2">
-                  <p className="text-[8px] uppercase tracking-[0.24em] text-[#5c5c5c]">
-                    Player Inventory
-                  </p>
-                  <div className="mt-0.5 flex items-center justify-between gap-2">
-                    <p className="min-w-0 truncate text-[12px] font-medium text-[#ededed]">
-                      {hoveredPlayer.gameName || "Player"}
-                      {hoveredPlayer.tagLine && (
-                        <span className="ml-0.5 font-num text-[10px] font-normal text-[#8f8f8f]">
-                          #{hoveredPlayer.tagLine}
-                        </span>
-                      )}
-                    </p>
-                    <div className="flex shrink-0 items-center gap-1">
-                      {hoveredTier?.smallIcon && (
-                        <img
-                          src={hoveredTier.smallIcon}
-                          alt=""
-                          className="h-3.5 w-3.5 object-contain"
-                        />
-                      )}
-                      <span className="text-[9px] text-[#8f8f8f]">
-                        {hoveredTier?.tierName || "Unranked"}
-                      </span>
-                    </div>
-                  </div>
-                  <p className="mt-0.5 font-num text-[9px] text-[#5c5c5c]">
-                    Lv. {hoveredPlayer.accountLevel}
-                    {hoveredRank?.kd !== null && hoveredRank?.kd !== undefined
-                      ? ` · K/D ${hoveredRank.kd.toFixed(2)}`
-                      : ""}
-                    {hoveredRank?.seasonWinRate !== null &&
-                    hoveredRank?.seasonWinRate !== undefined
-                      ? ` · 勝率 ${hoveredRank.seasonWinRate.toFixed(1)}%`
-                      : ""}
-                  </p>
-                </div>
-
-                <div className="min-h-0 flex-1 overflow-hidden p-2">
-                  {!loadouts && canShowLoadout ? (
-                    <div className="flex h-full items-center justify-center gap-2 text-[10px] text-[#8f8f8f]">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      インベントリを読み込み中…
-                    </div>
-                  ) : !canShowLoadout ? (
-                    <p className="p-2 text-[10px] leading-relaxed text-[#8f8f8f]">
-                      インベントリは試合中（エージェント選択・試合内）に表示できます。
-                    </p>
-                  ) : weaponEntries.length === 0 ? (
-                    <p className="p-2 text-[10px] text-[#8f8f8f]">
-                      装備情報が見つかりませんでした。
-                    </p>
-                  ) : (
-                    <div className="grid grid-cols-3 gap-1">
-                      {weaponEntries.map(({ weaponEntry, weapon, skin }) => {
-                        const isStandard =
-                          !skin ||
-                          /スタンダード|standard|default/i.test(skin.name);
-                        const icon = isStandard
-                          ? (weapon?.displayIcon ?? "")
-                          : (skin?.icon || weapon?.displayIcon || "");
-                        return (
-                          <div
-                            key={weaponEntry.weaponId}
-                            className="flex items-center gap-1.5 rounded-[4px] border border-[rgba(255,255,255,0.07)] bg-black/30 px-1.5 py-1"
-                          >
-                            <div className="flex h-5 w-9 shrink-0 items-center justify-center">
-                              <OverlayImage
-                                primary={icon}
-                                fallback={weapon?.displayIcon}
-                                className="max-h-5 max-w-9 object-contain"
-                              />
-                            </div>
-                            <div className="min-w-0">
-                              <p
-                                className="truncate text-[9px] text-[#ededed]"
-                                title={weapon?.displayName}
-                              >
-                                {weapon?.displayName || "武器"}
-                              </p>
-                              <p
-                                className="truncate text-[8px] text-[#5c5c5c]"
-                                title={skin?.name}
-                              >
-                                {skin?.name || "デフォルト"}
-                              </p>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-[#5c5c5c]">
-                <ScanEye className="h-5 w-5" />
-                <p className="text-[10px] leading-relaxed">
-                  プレイヤーにカーソルを合わせると
-                  <br />
-                  インベントリを表示します
-                </p>
-              </div>
-            )}
-          </aside>
+              <TeamColumn
+                title="味方チーム"
+                players={allies}
+                labels={allyLabels}
+                ranks={ranks}
+                assets={assets}
+                hovered={hovered}
+                onHover={handleHover}
+                isPregame={live?.status === "PREGAME"}
+              />
+              <TeamColumn
+                title="相手チーム"
+                players={enemies}
+                labels={enemyLabels}
+                ranks={ranks}
+                assets={assets}
+                hovered={hovered}
+                onHover={handleHover}
+                isPregame={live?.status === "PREGAME"}
+              />
             </>
           )}
         </div>
@@ -619,6 +551,22 @@ export function OverlayView() {
           </span>
         </footer>
       </div>
+
+      {hoveredPlayer && hoverRect && canShowLoadout && (
+        <div
+          className="pointer-events-none fixed z-50 vt-animate-in"
+          style={{ left: popoverLeft, top: popoverTop, width: POPOVER_WIDTH }}
+          data-overlay-inventory
+        >
+          <InventoryCard
+            player={hoveredPlayer}
+            tierName={hoveredTier?.tierName}
+            rank={hoveredRank}
+            weapons={weaponEntries}
+            loading={!loadouts}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -631,6 +579,7 @@ function TeamColumn({
   assets,
   hovered,
   onHover,
+  isPregame,
 }: {
   title: string;
   players: LiveMatchPlayerRaw[];
@@ -638,11 +587,12 @@ function TeamColumn({
   ranks: Record<string, LivePlayerRankInfo | undefined>;
   assets: ValorantAssetsCatalog;
   hovered: string | null;
-  onHover: (puuid: string | null) => void;
+  onHover: (puuid: string | null, rect: DOMRect | null) => void;
+  isPregame: boolean;
 }) {
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-white/[0.02]">
-      <div className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.08)] px-2.5 py-1.5">
+      <div className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.08)] px-3 py-1.5">
         <span className="text-[9px] uppercase tracking-[0.18em] text-[#8f8f8f]">
           {title}
         </span>
@@ -651,8 +601,8 @@ function TeamColumn({
         </span>
       </div>
       <div
-        className="flex min-h-0 flex-1 flex-col gap-0.5 p-1.5"
-        onMouseLeave={() => onHover(null)}
+        className="flex min-h-0 flex-1 flex-col gap-1 p-1.5"
+        onMouseLeave={() => onHover(null, null)}
       >
         {players.map((player) => (
           <PlayerRow
@@ -663,6 +613,7 @@ function TeamColumn({
             assets={assets}
             hovered={hovered === player.puuid}
             onHover={onHover}
+            isPregame={isPregame}
           />
         ))}
       </div>
@@ -677,31 +628,46 @@ function PlayerRow({
   assets,
   hovered,
   onHover,
+  isPregame,
 }: {
   player: LiveMatchPlayerRaw;
   label?: PartyLabel;
   rank?: LivePlayerRankInfo;
   assets: ValorantAssetsCatalog;
   hovered: boolean;
-  onHover: (puuid: string | null) => void;
+  onHover: (puuid: string | null, rect: DOMRect | null) => void;
+  isPregame: boolean;
 }) {
   const agent = player.agentId
     ? resolveAgentAsset(assets, player.agentId, null)
     : undefined;
   const tierId = rank?.tierId ?? player.pregameTier ?? 0;
   const tier = resolveTierAsset(assets, tierId);
-  const card = buildPlayerCardUrls(player.cardId || undefined);
   const name = player.gameName || "Player";
+  const placeholder = isPlaceholderName(name);
+  const revealed = player.isIncognito && !placeholder && !player.isSelf;
+  const selectionLabel = !isPregame
+    ? ""
+    : player.selectionState === "locked"
+      ? "確定"
+      : player.agentId
+        ? "選択中"
+        : "未選択";
+  const kd = rank?.kd;
+  const hs = rank?.hsPercent;
+  const winRate = rank?.seasonWinRate;
 
   return (
     <div
       data-overlay-player={player.puuid}
-      onMouseEnter={() => onHover(player.puuid)}
-      className={`flex items-center gap-2 rounded-[6px] px-2 py-1 transition-colors duration-100 ${
+      onMouseEnter={(event) =>
+        onHover(player.puuid, event.currentTarget.getBoundingClientRect())
+      }
+      className={`flex items-center gap-3 rounded-[8px] px-2.5 py-2 transition-colors duration-100 ${
         hovered ? "bg-white/[0.09]" : player.isSelf ? "bg-white/[0.04]" : ""
       }`}
     >
-      <div className="relative h-7 w-7 shrink-0 overflow-hidden rounded-[5px] border border-[rgba(255,255,255,0.1)] bg-black">
+      <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-[6px] border border-[rgba(255,255,255,0.1)] bg-black">
         {agent?.displayIcon ? (
           <img
             src={agent.displayIcon}
@@ -713,15 +679,22 @@ function PlayerRow({
             }`}
           />
         ) : (
-          <span className="flex h-full w-full items-center justify-center text-[9px] text-[#5c5c5c]">
+          <span className="flex h-full w-full items-center justify-center text-[10px] text-[#5c5c5c]">
             ?
           </span>
         )}
       </div>
 
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1">
-          <span className="truncate text-[11px] text-[#ededed]">{name}</span>
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-[12px] font-medium text-[#ededed]">
+            {name}
+          </span>
+          {player.tagLine && (
+            <span className="shrink-0 font-num text-[9px] text-[#8f8f8f]">
+              #{player.tagLine}
+            </span>
+          )}
           {player.isSelf && (
             <span className="shrink-0 rounded border border-white/25 px-1 text-[8px] text-[#ededed]">
               YOU
@@ -745,13 +718,32 @@ function PlayerRow({
               {label.label}
             </span>
           )}
+          {player.isIncognito && !player.isSelf && (
+            <span
+              className={`shrink-0 rounded border px-1 text-[8px] ${
+                revealed
+                  ? "border-white/25 text-[#ededed]"
+                  : "border-[rgba(255,255,255,0.16)] text-[#8f8f8f]"
+              }`}
+              title={
+                revealed
+                  ? "匿名設定ですが、PUUIDから名前を解決しています"
+                  : "匿名設定のプレイヤーです"
+              }
+            >
+              {revealed ? "匿名解除" : "匿名"}
+            </span>
+          )}
+          {player.isPartyOwner && (
+            <span className="shrink-0 rounded border border-[rgba(255,255,255,0.16)] px-1 text-[8px] text-[#8f8f8f]">
+              リーダー
+            </span>
+          )}
         </div>
-        <div className="flex items-center gap-1 text-[9px] text-[#5c5c5c]">
-          <span className="truncate">
-            {agent?.displayName ||
-              (player.selectionState === "locked"
-                ? "エージェント"
-                : "未選択")}
+
+        <div className="mt-0.5 flex items-center gap-1.5 text-[9px] text-[#5c5c5c]">
+          <span className="truncate text-[#8f8f8f]">
+            {agent?.displayName || (isPregame ? "エージェント未確定" : "—")}
           </span>
           <span>·</span>
           <span className="whitespace-nowrap font-num">
@@ -759,23 +751,164 @@ function PlayerRow({
               ? "Lv. —"
               : `Lv. ${player.accountLevel}`}
           </span>
+          {selectionLabel && (
+            <span
+              className={`whitespace-nowrap ${
+                player.selectionState === "locked"
+                  ? "text-[#ededed]"
+                  : player.agentId
+                    ? "text-[#8f8f8f]"
+                    : "text-[#5c5c5c]"
+              }`}
+            >
+              · {selectionLabel}
+            </span>
+          )}
+        </div>
+
+        <div className="mt-0.5 flex items-center gap-2 font-num text-[9px] text-[#8f8f8f]">
+          <span>
+            K/D {kd !== null && kd !== undefined ? kd.toFixed(2) : "—"}
+          </span>
+          <span className="text-[#3a3a3a]">|</span>
+          <span>
+            HS {hs !== null && hs !== undefined ? `${hs.toFixed(0)}%` : "—"}
+          </span>
+          <span className="text-[#3a3a3a]">|</span>
+          <span>
+            勝率{" "}
+            {winRate !== null && winRate !== undefined
+              ? `${winRate.toFixed(1)}%`
+              : "—"}
+          </span>
         </div>
       </div>
 
-      <div className="flex shrink-0 items-center gap-1" title={tier?.tierName || "Unranked"}>
-        {tier?.smallIcon ? (
-          <img
-            src={tier.smallIcon}
-            alt=""
-            className="h-4 w-4 object-contain"
-          />
-        ) : card.small ? (
-          <img
-            src={card.small}
-            alt=""
-            className="h-4 w-4 rounded object-cover opacity-60"
-          />
-        ) : null}
+      <div className="flex shrink-0 flex-col items-end gap-0.5">
+        <div
+          className="flex items-center gap-1"
+          title={tier?.tierName || "Unranked"}
+        >
+          {tier?.smallIcon && (
+            <img
+              src={tier.smallIcon}
+              alt=""
+              className="h-5 w-5 object-contain"
+            />
+          )}
+          <span className="max-w-[92px] truncate text-[10px] text-[#ededed]">
+            {tier?.tierName || "Unranked"}
+          </span>
+        </div>
+        <span className="font-num text-[9px] text-[#8f8f8f]">
+          {rank ? `${rank.rr} RR` : "— RR"}
+        </span>
+        <span className="max-w-[120px] truncate font-num text-[8px] text-[#5c5c5c]">
+          Peak {rank?.peakTierId ? resolveTierAsset(assets, rank.peakTierId)?.tierName || "—" : "—"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function InventoryCard({
+  player,
+  tierName,
+  rank,
+  weapons,
+  loading,
+}: {
+  player: LiveMatchPlayerRaw;
+  tierName?: string;
+  rank?: LivePlayerRankInfo;
+  weapons: Array<{
+    weaponEntry: { weaponId: string };
+    weapon?: { displayName: string; displayIcon?: string };
+    skin?: { name: string; icon?: string };
+  }>;
+  loading: boolean;
+}) {
+  return (
+    <div className="overflow-hidden rounded-[12px] border border-[rgba(255,255,255,0.12)] bg-[#0a0a0a] shadow-[0_20px_60px_rgba(0,0,0,0.8)]">
+      <div className="border-b border-[rgba(255,255,255,0.08)] px-3 py-2">
+        <p className="text-[8px] uppercase tracking-[0.24em] text-[#5c5c5c]">
+          Player Inventory
+        </p>
+        <div className="mt-0.5 flex items-center justify-between gap-2">
+          <p className="min-w-0 truncate text-[12px] font-medium text-[#ededed]">
+            {player.gameName || "Player"}
+            {player.tagLine && (
+              <span className="ml-0.5 font-num text-[10px] font-normal text-[#8f8f8f]">
+                #{player.tagLine}
+              </span>
+            )}
+          </p>
+          <div className="flex shrink-0 items-center gap-1">
+            <span className="text-[9px] text-[#8f8f8f]">
+              {tierName || "Unranked"}
+            </span>
+          </div>
+        </div>
+        <p className="mt-0.5 font-num text-[9px] text-[#5c5c5c]">
+          Lv. {player.accountLevel}
+          {rank?.kd !== null && rank?.kd !== undefined
+            ? ` · K/D ${rank.kd.toFixed(2)}`
+            : ""}
+          {rank?.seasonWinRate !== null && rank?.seasonWinRate !== undefined
+            ? ` · 勝率 ${rank.seasonWinRate.toFixed(1)}%`
+            : ""}
+        </p>
+      </div>
+
+      <div className="p-2">
+        {loading ? (
+          <div className="flex h-24 items-center justify-center gap-2 text-[10px] text-[#8f8f8f]">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            インベントリを読み込み中…
+          </div>
+        ) : weapons.length === 0 ? (
+          <p className="p-2 text-[10px] text-[#8f8f8f]">
+            装備情報が見つかりませんでした。
+          </p>
+        ) : (
+          <div className="grid grid-cols-4 gap-1">
+            {weapons.map(({ weaponEntry, weapon, skin }) => {
+              const isStandard =
+                !skin || /スタンダード|standard|default/i.test(skin.name);
+              const icon = isStandard
+                ? (weapon?.displayIcon ?? "")
+                : (skin?.icon || weapon?.displayIcon || "");
+              return (
+                <div
+                  key={weaponEntry.weaponId}
+                  className="flex items-center gap-1.5 rounded-[4px] border border-[rgba(255,255,255,0.07)] bg-black/30 px-1.5 py-1"
+                >
+                  <div className="flex h-5 w-8 shrink-0 items-center justify-center">
+                    <OverlayImage
+                      primary={icon}
+                      fallback={weapon?.displayIcon}
+                      className="max-h-5 max-w-8 object-contain"
+                    />
+                  </div>
+                  <div className="min-w-0">
+                    <p
+                      className="truncate text-[9px] text-[#ededed]"
+                      title={weapon?.displayName}
+                    >
+                      {weapon?.displayName || "武器"}
+                    </p>
+                    <p
+                      className="truncate text-[8px] text-[#5c5c5c]"
+                      title={skin?.name}
+                    >
+                      {skin?.name || "デフォルト"}
+                    </p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -161,8 +161,8 @@ export function OverlaySettingsSection() {
         <h2 className="text-sm font-medium text-[#ededed]">ゲーム内オーバーレイ</h2>
       </div>
       <p className="text-xs text-[#8f8f8f] mt-2 leading-relaxed">
-        エージェント選択が始まると、両チームのパーティ・ランクと、カーソルを合わせたプレイヤーの
-        インベントリを画面中央に表示します。ゲームには一切干渉しません（クリックはゲームに通ります）。
+        エージェント選択が始まると、両チームのパーティ・ランク・K/D・ピック状況を画面中央に表示します。
+        プレイヤーにカーソルを合わせると、装備中の全武器スキンをホバー表示します。ゲームには一切干渉しません（クリックはゲームに通ります）。
       </p>
 
       <div className="mt-5 space-y-4">

@@ -23,8 +23,8 @@ use tauri::{
 use crate::live_match::read_lockfile;
 
 pub const OVERLAY_LABEL: &str = "overlay";
-const OVERLAY_WIDTH: f64 = 960.0;
-const OVERLAY_HEIGHT: f64 = 460.0;
+const OVERLAY_WIDTH: f64 = 1080.0;
+const OVERLAY_HEIGHT: f64 = 520.0;
 
 /// Auto-show at agent select (pushed from the UI setting).
 static AUTO_SHOW: AtomicBool = AtomicBool::new(true);
