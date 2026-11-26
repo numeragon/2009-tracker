@@ -14,10 +14,15 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use reqwest::header::AUTHORIZATION;
 use serde::Serialize;
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{
     AppHandle, Manager, PhysicalPosition, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
+use windows::Win32::Foundation::COLORREF;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA, SetLayeredWindowAttributes, SetWindowLongPtrW,
+    WS_EX_LAYERED,
 };
 
 use crate::live_match::read_lockfile;
@@ -26,12 +31,20 @@ pub const OVERLAY_LABEL: &str = "overlay";
 const OVERLAY_WIDTH: f64 = 1080.0;
 const OVERLAY_HEIGHT: f64 = 520.0;
 
+/// Number of opacity steps used for the show/hide fade.
+const FADE_STEPS: u8 = 12;
+const FADE_STEP: Duration = Duration::from_millis(14);
+
 /// Auto-show at agent select (pushed from the UI setting).
 static AUTO_SHOW: AtomicBool = AtomicBool::new(true);
 /// True while the overlay is visible because the watcher showed it.
 static AUTO_SHOWN: AtomicBool = AtomicBool::new(false);
 /// True after a manual toggle; the watcher must not hide it automatically.
 static MANUAL: AtomicBool = AtomicBool::new(false);
+/// Intended visibility, used by the hotkey toggle while a fade is running.
+static TARGET_VISIBLE: AtomicBool = AtomicBool::new(false);
+static CURRENT_ALPHA: AtomicU8 = AtomicU8::new(0);
+static FADE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,31 +101,77 @@ fn build(app: &AppHandle) -> Result<WebviewWindow, String> {
     Ok(window)
 }
 
+/// Applies a whole-window opacity through the Win32 layered-window API. The
+/// overlay is not a transparent window, so fading the window itself (rather
+/// than CSS) also fades the dark backdrop over the game.
+fn apply_alpha(window: &WebviewWindow, alpha: u8) {
+    let Ok(raw_hwnd) = window.hwnd() else {
+        return;
+    };
+    // Tauri may depend on a different `windows` crate version than this crate,
+    // so rebuild the handle from the raw pointer instead of passing it across.
+    let hwnd = windows::Win32::Foundation::HWND(raw_hwnd.0);
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if style & (WS_EX_LAYERED.0 as isize) == 0 {
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | (WS_EX_LAYERED.0 as isize));
+        }
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+    }
+    CURRENT_ALPHA.store(alpha, Ordering::Relaxed);
+}
+
+/// Fades the overlay towards `target` (0 or 255). A newer fade cancels the
+/// previous one so quick hotkey presses reverse direction cleanly.
+fn fade_to(window: WebviewWindow, target: u8) {
+    let generation = FADE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    tauri::async_runtime::spawn(async move {
+        let start = CURRENT_ALPHA.load(Ordering::Relaxed) as i32;
+        let target_i = target as i32;
+        for step in 1..=FADE_STEPS {
+            if FADE_GENERATION.load(Ordering::SeqCst) != generation {
+                return;
+            }
+            let value =
+                start + (target_i - start) * step as i32 / FADE_STEPS as i32;
+            apply_alpha(&window, value.clamp(0, 255) as u8);
+            tokio::time::sleep(FADE_STEP).await;
+        }
+        if target == 0 && FADE_GENERATION.load(Ordering::SeqCst) == generation {
+            let _ = window.hide();
+        }
+    });
+}
+
 pub(crate) fn show(app: &AppHandle) -> Result<(), String> {
+    TARGET_VISIBLE.store(true, Ordering::SeqCst);
     let window = match app.get_webview_window(OVERLAY_LABEL) {
         Some(window) => window,
         None => build(app)?,
     };
     center_on_cursor_monitor(app, &window);
+    if !window.is_visible().unwrap_or(false) {
+        apply_alpha(&window, 0);
+    }
     window.show().map_err(|e| e.to_string())?;
     let _ = window.set_always_on_top(true);
+    fade_to(window, 255);
     Ok(())
 }
 
 pub(crate) fn hide(app: &AppHandle) -> Result<(), String> {
+    TARGET_VISIBLE.store(false, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
-        window.hide().map_err(|e| e.to_string())?;
+        if window.is_visible().unwrap_or(false) {
+            fade_to(window, 0);
+        }
     }
     Ok(())
 }
 
 pub(crate) fn toggle(app: &AppHandle) -> Result<bool, String> {
     MANUAL.store(true, Ordering::Relaxed);
-    let visible = app
-        .get_webview_window(OVERLAY_LABEL)
-        .and_then(|window| window.is_visible().ok())
-        .unwrap_or(false);
-    if visible {
+    if TARGET_VISIBLE.load(Ordering::SeqCst) {
         AUTO_SHOWN.store(false, Ordering::Relaxed);
         hide(app)?;
         Ok(false)
@@ -141,10 +200,8 @@ pub fn overlay_toggle(app: AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub fn overlay_is_visible(app: AppHandle) -> bool {
-    app.get_webview_window(OVERLAY_LABEL)
-        .and_then(|window| window.is_visible().ok())
-        .unwrap_or(false)
+pub fn overlay_is_visible(_app: AppHandle) -> bool {
+    TARGET_VISIBLE.load(Ordering::SeqCst)
 }
 
 #[tauri::command]
