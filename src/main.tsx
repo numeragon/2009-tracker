@@ -9,6 +9,28 @@ import "@fontsource/geist-mono/500.css";
 import "@fontsource/geist-mono/600.css";
 import "./index.css";
 import App from "./App";
+import { OverlayView } from "./components/OverlayView";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
+// The same bundle powers the borderless in-game overlay window. Tauri tells us
+// which window we are through its label; the query string is a dev fallback for
+// previewing the overlay in a plain browser (`?overlay=1`).
+function isOverlayWindow(): boolean {
+  try {
+    if (getCurrentWindow().label === "overlay") return true;
+  } catch {
+    // Not running inside Tauri (or the window API is unavailable).
+  }
+  return new URLSearchParams(window.location.search).has("overlay");
+}
+
+const overlay = isOverlayWindow();
+
+if (overlay) {
+  document.documentElement.classList.add("overlay-root");
+  document.body.classList.add("overlay-root");
+  document.body.classList.remove("bg-black");
+}
 
 // Suppress browser default right-click menu ("名前を付けて保存", "印刷", etc.)
 window.addEventListener(
@@ -49,7 +71,5 @@ window.addEventListener(
 );
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
+  <React.StrictMode>{overlay ? <OverlayView /> : <App />}</React.StrictMode>,
 );

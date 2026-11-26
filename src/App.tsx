@@ -24,6 +24,8 @@ import {
   updateStoredPlayerMeta,
 } from "./lib/storage";
 import { loadValorantAssets } from "./lib/valorantAssets";
+import { loadOverlaySettings } from "./lib/overlaySettings";
+import { invoke } from "@tauri-apps/api/core";
 import { aggregateProfileStats } from "./lib/aggregateStats";
 import {
   fetchFilteredMatches,
@@ -116,6 +118,14 @@ export default function App() {
   } | null>(null);
 
   const searchReqIdRef = useRef(0);
+
+  // Keep the Rust overlay watcher in sync with the persisted auto-show setting.
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    void invoke("overlay_set_auto_show", {
+      enabled: loadOverlaySettings().autoShow,
+    }).catch(() => {});
+  }, []);
 
   // Hydrate persistent Tauri store + valorant-api.com static assets + Replay status on startup
   useEffect(() => {

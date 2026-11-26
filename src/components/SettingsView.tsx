@@ -4,6 +4,7 @@ import type { AppSettings, Region } from "../types/valorant";
 import { openExternalUrl } from "../lib/externalLink";
 import { BUILTIN_API_KEY, clearApiCache, sanitizeApiKey } from "../lib/storage";
 import { checkAndApplyUpdate, getCurrentAppVersion } from "../lib/updater";
+import { OverlaySettingsSection } from "./OverlaySettingsSection";
 
 const REGION_OPTIONS: Array<{ value: Region; label: string; sub: string }> = [
   { value: "ap", label: "AP", sub: "アジア太平洋（日本を含む）" },
@@ -213,6 +214,8 @@ export function SettingsView({ settings, onSaveSettings }: SettingsViewProps) {
           })}
         </div>
       </section>
+
+      <OverlaySettingsSection />
 
       {/* Cache Section */}
       <section className="vt-panel p-6 mb-6">

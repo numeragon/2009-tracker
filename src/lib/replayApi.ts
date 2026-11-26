@@ -30,6 +30,8 @@ export interface RecorderConfig {
   editorMods: number;
   folderVk: number;
   folderMods: number;
+  overlayVk: number;
+  overlayMods: number;
 }
 
 export interface HotkeyLabels {
@@ -37,6 +39,7 @@ export interface HotkeyLabels {
   toggleRecording: string;
   openEditor: string;
   openFolder: string;
+  overlayToggle: string;
 }
 
 export interface MicrophoneDevice {

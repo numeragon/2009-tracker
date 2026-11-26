@@ -76,6 +76,7 @@ pub struct HotkeyLabelsDto {
     pub toggle_recording: String,
     pub open_editor: String,
     pub open_folder: String,
+    pub overlay_toggle: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -744,6 +745,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 Some(GlobalAction::OpenFolder) => {
                     with_ctx(|c| library::open_folder(&c.applied_cfg.output_dir));
                 }
+                Some(GlobalAction::OverlayToggle) => {
+                    with_ctx(|c| {
+                        let _ = crate::overlay::toggle(&c.app);
+                    });
+                }
                 None => {}
             }
             LRESULT(0)
@@ -904,6 +910,7 @@ fn build_state_dto(shared: &SharedHost, include_mics: bool) -> ReplayStateDto {
             toggle_recording: hotkey_name(cfg.toggle_vk, cfg.toggle_mods),
             open_editor: hotkey_name(cfg.editor_vk, cfg.editor_mods),
             open_folder: hotkey_name(cfg.folder_vk, cfg.folder_mods),
+            overlay_toggle: hotkey_name(cfg.overlay_vk, cfg.overlay_mods),
         },
         failed_hotkeys: shared.failed_hotkeys.clone(),
         microphones,

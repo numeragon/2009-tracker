@@ -1,5 +1,6 @@
 mod live_match;
 mod local_api;
+mod overlay;
 mod replay;
 mod riot_2fa;
 mod riot_auth;
@@ -41,6 +42,7 @@ pub fn run() {
         .setup(move |app| {
             let host = replay::host::init(app.handle().clone());
             app.manage(host);
+            overlay::spawn_phase_watcher(app.handle().clone());
             if start_in_background {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
@@ -69,6 +71,13 @@ pub fn run() {
             live_match::fetch_match_loadouts,
             live_match::fetch_live_player_stats,
             live_match::fetch_leaderboard_slice,
+            overlay::overlay_show,
+            overlay::overlay_hide,
+            overlay::overlay_toggle,
+            overlay::overlay_is_visible,
+            overlay::overlay_set_auto_show,
+            overlay::overlay_cursor,
+            overlay::fetch_session_phase,
             local_api::fetch_crosshair_settings,
             local_api::fetch_storefront,
             riot_auth::riot_login,

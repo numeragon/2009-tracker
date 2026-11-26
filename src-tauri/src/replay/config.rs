@@ -82,6 +82,9 @@ pub struct Config {
     /// Global hotkey to open Clips output folder (vk 0 = unbound).
     pub folder_vk: u32,
     pub folder_mods: u32,
+    /// Global hotkey to toggle the in-game overlay (vk 0 = unbound).
+    pub overlay_vk: u32,
+    pub overlay_mods: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -90,14 +93,16 @@ pub enum GlobalAction {
     ToggleRecording,
     OpenEditor,
     OpenFolder,
+    OverlayToggle,
 }
 
 impl GlobalAction {
-    pub const ALL: [GlobalAction; 4] = [
+    pub const ALL: [GlobalAction; 5] = [
         GlobalAction::SaveClip,
         GlobalAction::ToggleRecording,
         GlobalAction::OpenEditor,
         GlobalAction::OpenFolder,
+        GlobalAction::OverlayToggle,
     ];
 
     pub fn id(self) -> i32 {
@@ -114,6 +119,7 @@ impl GlobalAction {
             GlobalAction::ToggleRecording => "録画の一時停止 / 再開",
             GlobalAction::OpenEditor => "クリップ編集を開く",
             GlobalAction::OpenFolder => "保存先フォルダを開く",
+            GlobalAction::OverlayToggle => "オーバーレイの表示 / 非表示",
         }
     }
 }
@@ -145,6 +151,8 @@ impl Default for Config {
             editor_mods: 0,
             folder_vk: 0,
             folder_mods: 0,
+            overlay_vk: 0x77, // F8
+            overlay_mods: 0,
         }
     }
 }
@@ -205,6 +213,7 @@ impl Config {
             GlobalAction::ToggleRecording => (self.toggle_vk, self.toggle_mods),
             GlobalAction::OpenEditor => (self.editor_vk, self.editor_mods),
             GlobalAction::OpenFolder => (self.folder_vk, self.folder_mods),
+            GlobalAction::OverlayToggle => (self.overlay_vk, self.overlay_mods),
         }
     }
 
@@ -221,6 +230,7 @@ impl Config {
             GlobalAction::ToggleRecording => (&mut self.toggle_vk, &mut self.toggle_mods),
             GlobalAction::OpenEditor => (&mut self.editor_vk, &mut self.editor_mods),
             GlobalAction::OpenFolder => (&mut self.folder_vk, &mut self.folder_mods),
+            GlobalAction::OverlayToggle => (&mut self.overlay_vk, &mut self.overlay_mods),
         }
     }
 }

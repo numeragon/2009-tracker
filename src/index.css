@@ -48,6 +48,14 @@ body,
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* The overlay window uses a solid dark backdrop so the panel stays readable. */
+html.overlay-root,
+body.overlay-root,
+body.overlay-root #root {
+  background: #060606 !important;
+  background-color: #060606 !important;
+}
+
 input,
 textarea {
   user-select: text;
