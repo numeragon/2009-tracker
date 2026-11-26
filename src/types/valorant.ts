@@ -542,6 +542,9 @@ export interface PregamePicksResponse {
   ok: boolean;
   message: string | null;
   matchId: string | null;
+  /** Enemy lock progress (Riot hides the agents themselves in competitive). */
+  enemyLocked: number;
+  enemySize: number;
   picks: Array<{
     puuid: string;
     agentId: string;

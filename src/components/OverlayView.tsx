@@ -198,6 +198,10 @@ export function OverlayView() {
   const [assets, setAssets] = useState<ValorantAssetsCatalog>(EMPTY_ASSETS);
   const [catalog, setCatalog] = useState<StoreCatalog | null>(null);
   const [loadouts, setLoadouts] = useState<MatchLoadoutsResponse | null>(null);
+  const [pickStatus, setPickStatus] = useState({
+    enemyLocked: 0,
+    enemySize: 0,
+  });
   const [hotkeyLabel, setHotkeyLabel] = useState("F8");
   const [hovered, setHovered] = useState<string | null>(null);
   const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
@@ -298,6 +302,10 @@ export function OverlayView() {
     const tick = async () => {
       const result = await fetchPregamePicks(region);
       if (cancelled || !result.ok) return;
+      setPickStatus({
+        enemyLocked: result.enemyLocked ?? 0,
+        enemySize: result.enemySize ?? 0,
+      });
       const next: Record<string, { agentId: string; selectionState: string }> =
         {};
       for (const pick of result.picks) {
@@ -386,13 +394,21 @@ export function OverlayView() {
 
   const players = useMemo(() => {
     const list = live?.players ?? [];
+    const rank = (state: string) =>
+      state === "locked" ? 2 : state === "selected" ? 1 : 0;
     return list.map((player) => {
       const pick = picks[player.puuid.toLowerCase()];
       if (!pick) return player;
+      // Never let a masked copy erase an agent we already know about, and
+      // prefer a locked state over a selected one.
+      const selectionState =
+        rank(pick.selectionState) >= rank(player.selectionState)
+          ? pick.selectionState || player.selectionState
+          : player.selectionState;
       return {
         ...player,
         agentId: pick.agentId || player.agentId,
-        selectionState: pick.selectionState || player.selectionState,
+        selectionState,
       };
     });
   }, [live?.players, picks]);
@@ -526,6 +542,7 @@ export function OverlayView() {
                 hovered={hovered}
                 onHover={handleHover}
                 isPregame={live?.status === "PREGAME"}
+                isEnemy={false}
               />
               <TeamColumn
                 title="相手チーム"
@@ -536,6 +553,8 @@ export function OverlayView() {
                 hovered={hovered}
                 onHover={handleHover}
                 isPregame={live?.status === "PREGAME"}
+                isEnemy={true}
+                pickInfo={pickStatus}
               />
             </>
           )}
@@ -580,6 +599,8 @@ function TeamColumn({
   hovered,
   onHover,
   isPregame,
+  isEnemy,
+  pickInfo,
 }: {
   title: string;
   players: LiveMatchPlayerRaw[];
@@ -589,17 +610,44 @@ function TeamColumn({
   hovered: string | null;
   onHover: (puuid: string | null, rect: DOMRect | null) => void;
   isPregame: boolean;
+  isEnemy: boolean;
+  pickInfo?: { enemyLocked: number; enemySize: number };
 }) {
+  const enemyPicksHidden =
+    isEnemy &&
+    isPregame &&
+    players.length > 0 &&
+    players.every((player) => !player.agentId);
   return (
     <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-white/[0.02]">
       <div className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.08)] px-3 py-1.5">
-        <span className="text-[9px] uppercase tracking-[0.18em] text-[#8f8f8f]">
-          {title}
-        </span>
-        <span className="font-num text-[9px] text-[#5c5c5c]">
-          {players.length}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className="text-[9px] uppercase tracking-[0.18em] text-[#8f8f8f]">
+            {title}
+          </span>
+          {isEnemy && isPregame && (
+            <span className="flex items-center gap-1 text-[8px] text-[#8f8f8f]">
+              <span className="h-1 w-1 animate-pulse rounded-full bg-[#ededed]" />
+              1.2秒更新
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {isEnemy && isPregame && pickInfo && (pickInfo.enemyLocked > 0 || pickInfo.enemySize > 0) && (
+            <span className="font-num text-[8px] text-[#8f8f8f]">
+              ロック {pickInfo.enemyLocked}/{pickInfo.enemySize > 0 ? pickInfo.enemySize : players.length}
+            </span>
+          )}
+          <span className="font-num text-[9px] text-[#5c5c5c]">
+            {players.length}
+          </span>
+        </div>
       </div>
+      {enemyPicksHidden && (
+        <div className="shrink-0 border-b border-[rgba(255,255,255,0.06)] px-3 py-1 text-[8px] leading-relaxed text-[#5c5c5c]">
+          敵のピックはRiotが試合開始まで公開しない場合があります（ロック数のみ更新）
+        </div>
+      )}
       <div
         className="flex min-h-0 flex-1 flex-col gap-1 p-1.5"
         onMouseLeave={() => onHover(null, null)}
@@ -649,10 +697,16 @@ function PlayerRow({
   const selectionLabel = !isPregame
     ? ""
     : player.selectionState === "locked"
-      ? "確定"
-      : player.agentId
-        ? "選択中"
-        : "未選択";
+      ? player.agentId
+        ? "確定"
+        : "確定（非公開）"
+      : player.selectionState === "selected"
+        ? player.agentId
+          ? "選択中"
+          : "選択中（非公開）"
+        : player.agentId
+          ? "選択中"
+          : "未選択";
   const kd = rank?.kd;
   const hs = rank?.hsPercent;
   const winRate = rank?.seasonWinRate;
@@ -756,7 +810,7 @@ function PlayerRow({
               className={`whitespace-nowrap ${
                 player.selectionState === "locked"
                   ? "text-[#ededed]"
-                  : player.agentId
+                  : player.selectionState === "selected" || player.agentId
                     ? "text-[#8f8f8f]"
                     : "text-[#5c5c5c]"
               }`}

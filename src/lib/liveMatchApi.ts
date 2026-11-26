@@ -85,6 +85,8 @@ export async function fetchPregamePicks(
     ok: false,
     message: null,
     matchId: null,
+    enemyLocked: 0,
+    enemySize: 0,
     picks: [],
   };
   if (!isTauriRuntime()) return empty;

@@ -2813,6 +2813,10 @@ pub struct PregamePicksResponse {
     pub ok: bool,
     pub message: Option<String>,
     pub match_id: Option<String>,
+    /// Enemy lock progress from the pregame document. Riot often hides the
+    /// enemy agents themselves, but these counters still update live.
+    pub enemy_locked: i64,
+    pub enemy_size: i64,
     pub picks: Vec<PregamePickDto>,
 }
 
@@ -2822,6 +2826,8 @@ impl PregamePicksResponse {
             ok: false,
             message: Some(message.into()),
             match_id: None,
+            enemy_locked: 0,
+            enemy_size: 0,
             picks: Vec::new(),
         }
     }
@@ -2980,10 +2986,21 @@ pub async fn fetch_pregame_picks(
         })
         .collect();
 
+    let enemy_locked = json
+        .get("EnemyTeamLockCount")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let enemy_size = json
+        .get("EnemyTeamSize")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
     Ok(PregamePicksResponse {
         ok: true,
         message: None,
         match_id: Some(match_id),
+        enemy_locked,
+        enemy_size,
         picks,
     })
 }

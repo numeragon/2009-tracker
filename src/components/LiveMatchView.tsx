@@ -812,6 +812,10 @@ export function LiveMatchView({
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [lockerAnchor, setLockerAnchor] = useState<LockerAnchor | null>(null);
+  const [enemyLockStatus, setEnemyLockStatus] = useState({
+    locked: 0,
+    size: 0,
+  });
 
   const lockerHideTimer = useRef<number | null>(null);
   const showLocker = useCallback(
@@ -1010,6 +1014,10 @@ export function LiveMatchView({
       try {
         const res = await fetchPregamePicks(picksRegion);
         if (cancelled || !res.ok || !res.matchId) return;
+        setEnemyLockStatus({
+          locked: res.enemyLocked ?? 0,
+          size: res.enemySize ?? 0,
+        });
         setLiveData((prev) => {
           if (!prev || prev.status !== "PREGAME" || prev.matchId !== res.matchId) {
             return prev;
@@ -1412,10 +1420,24 @@ export function LiveMatchView({
                     1秒ごと更新
                   </span>
                 </div>
-                <span className="font-num text-[10px] uppercase text-[#5c5c5c]">
-                  {enemies.filter((p) => p.agentId).length} / {enemies.length} picked
-                </span>
+                <div className="text-right">
+                  <div className="font-num text-[10px] uppercase text-[#5c5c5c]">
+                    {enemies.filter((p) => p.agentId).length} / {enemies.length} picked
+                  </div>
+                  {(enemyLockStatus.locked > 0 || enemyLockStatus.size > 0) && (
+                    <div className="font-num text-[9px] text-[#5c5c5c]">
+                      ロック {enemyLockStatus.locked}/
+                      {enemyLockStatus.size || enemies.length}
+                    </div>
+                  )}
+                </div>
               </div>
+
+              {enemies.every((p) => !p.agentId) && (
+                <div className="px-5 py-1.5 text-[10px] leading-relaxed text-[#5c5c5c] vt-hairline-b bg-[#0a0a0a]">
+                  敵のピックはRiotが試合開始まで公開しない場合があります（ロック数のみ更新）
+                </div>
+              )}
 
               <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                 {enemies.map((p) => {
