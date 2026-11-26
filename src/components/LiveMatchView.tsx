@@ -142,7 +142,27 @@ function LiveTeamTable({
   onHoverPlayer,
   onLeavePlayer,
 }: LiveTeamTableProps) {
-  const partyCount = players.filter((p) => p.isPartyMember).length;
+  // Group the roster by resolved party id. Groups of one are solo players and
+  // stay unlabelled; the own party is listed first so it is always P1.
+  const partyGroupsById = new Map<
+    string,
+    { id: string; count: number; inferred: boolean; isOwn: boolean }
+  >();
+  for (const player of players) {
+    if (!player.partyId) continue;
+    let group = partyGroupsById.get(player.partyId);
+    if (!group) {
+      group = { id: player.partyId, count: 0, inferred: false, isOwn: false };
+      partyGroupsById.set(player.partyId, group);
+    }
+    group.count += 1;
+    group.inferred = group.inferred || Boolean(player.partyInferred);
+    group.isOwn = group.isOwn || Boolean(player.isSelf);
+  }
+  const partyGroups = [...partyGroupsById.values()]
+    .filter((group) => group.count > 1)
+    .sort((a, b) => Number(b.isOwn) - Number(a.isOwn))
+    .map((group, index) => ({ ...group, label: `P${index + 1}` }));
   return (
     <section className="vt-panel overflow-hidden">
       <div className="px-5 py-3.5 flex items-center justify-between vt-hairline-b bg-[#0a0a0a]">
@@ -157,11 +177,26 @@ function LiveTeamTable({
         <span className="font-num text-xs text-[#5c5c5c]">{players.length} 人</span>
       </div>
 
-      {!isLobby && partyCount > 1 && (
-        <div className="px-5 py-1.5 vt-hairline-b bg-[#0a0a0a]">
-          <span className="text-[10px] px-1.5 py-0.5 rounded border border-[rgba(255,255,255,0.16)] text-[#8f8f8f]">
-            パーティ {partyCount} 人
-          </span>
+      {!isLobby && partyGroups.length > 0 && (
+        <div className="px-5 py-1.5 vt-hairline-b bg-[#0a0a0a] flex flex-wrap items-center gap-1.5">
+          {partyGroups.map((group) => (
+            <span
+              key={group.id}
+              title={
+                group.inferred
+                  ? "過去の試合で同じパーティだったプレイヤーをまとめています（推定）"
+                  : "Riotのパーティ情報"
+              }
+              className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                group.isOwn
+                  ? "border-white/25 text-[#ededed]"
+                  : "border-[rgba(255,255,255,0.16)] text-[#8f8f8f]"
+              }`}
+            >
+              {group.label} {group.isOwn ? "あなたのパーティ" : "パーティ"}（{group.count}
+              人{group.inferred ? "・推定" : ""}）
+            </span>
+          ))}
         </div>
       )}
 
@@ -189,6 +224,9 @@ function LiveTeamTable({
                   : undefined;
 
               const isMasked = p.isIncognito && !p.isSelf;
+              const partyGroup = p.partyId
+                ? partyGroups.find((group) => group.id === p.partyId)
+                : undefined;
               // Incognito rosters expose a placeholder such as "Player" or
               // "Player 3". The stats API is keyed by PUUID, so it still knows
               // the real Riot ID and we can show it instead.
@@ -289,9 +327,22 @@ function LiveTeamTable({
                             </span>
                           )}
 
-                          {!isLobby && p.isPartyMember && !p.isSelf && (
-                            <span className="text-[9px] px-1 py-0.2 rounded border border-[rgba(255,255,255,0.16)] text-[#8f8f8f] shrink-0">
-                              パーティ
+                          {!isLobby && partyGroup && (
+                            <span
+                              title={
+                                partyGroup.inferred
+                                  ? `同じパーティ（${partyGroup.count}人・過去の試合から推定）`
+                                  : `同じパーティ（${partyGroup.count}人）`
+                              }
+                              className={`text-[9px] px-1 py-0.2 rounded border shrink-0 ${
+                                partyGroup.isOwn
+                                  ? "border-white/30 text-[#ededed]"
+                                  : partyGroup.inferred
+                                    ? "border-dashed border-[rgba(255,255,255,0.22)] text-[#8f8f8f]"
+                                    : "border-[rgba(255,255,255,0.16)] text-[#8f8f8f]"
+                              }`}
+                            >
+                              {partyGroup.label}
                             </span>
                           )}
 
@@ -1215,7 +1266,7 @@ export function LiveMatchView({
           <p className="text-xs text-[#8f8f8f] mt-1">
             {activeSavedTab
               ? "保存した試合スナップショットを表示しています。別のタブへ移動しても状態はそのまま保持されます。"
-              : "起動中の VALORANT クライアントから、ロビーのパーティメンバーやマッチ参加者とランク・K/D を自動検出します（タブ切替時も取得済みデータを保持）。"}
+              : "起動中の VALORANT クライアントから、両チームのパーティ構成（推定含む）とマッチ参加者・ランク・K/D を自動検出します（タブ切替時も取得済みデータを保持）。"}
           </p>
         </div>
 

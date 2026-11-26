@@ -429,6 +429,10 @@ export interface LiveMatchPlayerRaw {
   isPartyOwner?: boolean | null;
   /** Party ID / membership (your premade group). */
   partyId?: string | null;
+  /** Resolved party size across the lobby roster (1 when solo). */
+  partySize?: number;
+  /** True when the group is guessed from shared match history, not Riot data. */
+  partyInferred?: boolean;
   isPartyMember?: boolean;
 }
 

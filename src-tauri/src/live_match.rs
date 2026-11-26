@@ -36,9 +36,14 @@ pub struct LiveMatchPlayerRaw {
     /// Party lobby only: ready check state / party owner.
     pub party_ready: Option<bool>,
     pub is_party_owner: Option<bool>,
-    /// Party ID shared by the player's premade group (only known for your own
-    /// party, since Riot does not expose other parties during a match).
+    /// Party ID shared by the player's premade group. Exact for your own party
+    /// and for allies seen in the local presence feed, `h:`-prefixed and
+    /// `party_inferred` when guessed from shared match history.
     pub party_id: Option<String>,
+    /// Number of players in the same resolved party (1 when solo).
+    pub party_size: usize,
+    /// True when the group comes from match-history inference, not Riot data.
+    pub party_inferred: bool,
     pub is_party_member: bool,
 }
 
@@ -1039,6 +1044,446 @@ async fn fetch_party_members(
     result
 }
 
+// ---------------------------------------------------------------------------
+// Party resolution
+//
+// Riot only exposes your own party through the party service. Two other
+// sources still let us show everyone else's premade:
+//
+//  * the local presence feed (`/chat/v4/presences`) carries the real party id
+//    of every allied player in the match (exact, refreshed often);
+//  * finished match details store the `partyId` each player queued with, so
+//    players who shared a party in several recent matches are grouped as a
+//    likely premade (inferred, labelled as such in the UI).
+//
+// The history pass is expensive (up to ten match documents per player), so it
+// runs once per match in the background and is cached until the match changes.
+// ---------------------------------------------------------------------------
+
+const PARTY_PRESENCE_TTL: Duration = Duration::from_secs(20);
+const PARTY_INFER_MATCHES: usize = 10;
+const PARTY_INFER_MIN_SHARED: u32 = 2;
+const PARTY_INFER_MAX_DETAILS: usize = 60;
+const PARTY_INFER_RETRY: Duration = Duration::from_secs(300);
+
+#[derive(Clone, Debug)]
+struct PartyTag {
+    id: String,
+    inferred: bool,
+}
+
+#[derive(Default, Clone)]
+struct PartyResolutionCache {
+    match_key: String,
+    presence: HashMap<String, String>,
+    inferred: HashMap<String, String>,
+    presence_fetched_at: Option<Instant>,
+    inference_started_at: Option<Instant>,
+}
+
+static PARTY_RESOLUTION: OnceLock<Mutex<PartyResolutionCache>> = OnceLock::new();
+
+fn party_resolution() -> &'static Mutex<PartyResolutionCache> {
+    PARTY_RESOLUTION.get_or_init(|| Mutex::new(PartyResolutionCache::default()))
+}
+
+/// Reads the local presence feed and returns puuid -> party id for every
+/// player the client can see (the whole allied team during a match).
+async fn fetch_presence_party_map() -> HashMap<String, String> {
+    let map = HashMap::new();
+    let Some(lock) = read_lockfile() else {
+        return map;
+    };
+    let Ok(client) = reqwest::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .timeout(Duration::from_secs(4))
+        .build()
+    else {
+        return map;
+    };
+    let basic = BASE64.encode(format!("riot:{}", lock.password));
+    let url = format!("https://127.0.0.1:{}/chat/v4/presences", lock.port);
+    let Ok(resp) = client
+        .get(&url)
+        .header(AUTHORIZATION, format!("Basic {basic}"))
+        .send()
+        .await
+    else {
+        return map;
+    };
+    if !resp.status().is_success() {
+        return map;
+    }
+    let Ok(body) = resp.json::<Value>().await else {
+        return map;
+    };
+    parse_presence_parties(&body)
+}
+
+/// Parses `/chat/v4/presences` into puuid -> party id. Each presence carries a
+/// base64 `private` blob; the party id lives under `partyPresenceData` on
+/// current builds and at the root on older ones.
+fn parse_presence_parties(body: &Value) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let presences = body
+        .get("presences")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .or_else(|| body.as_array().cloned())
+        .unwrap_or_default();
+
+    for entry in presences {
+        let Some(puuid) = entry.get("puuid").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(private) = entry.get("private").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if private.is_empty() {
+            continue;
+        }
+        let Ok(bytes) = BASE64.decode(private) else {
+            continue;
+        };
+        let Ok(decoded) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        let party = decoded
+            .get("partyPresenceData")
+            .and_then(|d| d.get("partyId"))
+            .or_else(|| decoded.get("partyId"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if party.is_empty() || is_zero_guid(party) {
+            continue;
+        }
+        map.insert(puuid.to_lowercase(), party.to_string());
+    }
+    map
+}
+
+/// Collects the party members of every player in one finished match document
+/// and counts how often each pair of lobby players queued together.
+fn count_party_pairs(
+    detail: &Value,
+    roster: &HashSet<String>,
+    counts: &mut HashMap<(String, String), u32>,
+) {
+    let Some(players) = detail.get("players").and_then(|v| v.as_array()) else {
+        return;
+    };
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for player in players {
+        let subject = player
+            .get("subject")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if subject.is_empty() || !roster.contains(&subject) {
+            continue;
+        }
+        let party = player
+            .get("partyId")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if party.is_empty() || is_zero_guid(party) {
+            continue;
+        }
+        groups.entry(party.to_string()).or_default().push(subject);
+    }
+
+    for members in groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        for i in 0..members.len() {
+            for j in (i + 1)..members.len() {
+                let (a, b) = if members[i] <= members[j] {
+                    (members[i].clone(), members[j].clone())
+                } else {
+                    (members[j].clone(), members[i].clone())
+                };
+                *counts.entry((a, b)).or_insert(0) += 1;
+            }
+        }
+    }
+}
+
+fn find_root(parent: &mut HashMap<String, String>, key: &str) -> String {
+    let mut current = key.to_string();
+    loop {
+        let next = parent.get(&current).cloned().unwrap_or_else(|| current.clone());
+        if next == current {
+            return current;
+        }
+        // Path compression.
+        parent.insert(current.clone(), next.clone());
+        current = next;
+    }
+}
+
+/// Union-find over the lobby roster: pairs that shared a party in at least
+/// PARTY_INFER_MIN_SHARED recent matches are merged into one synthetic group.
+fn group_by_pair_counts(
+    puuids: &[String],
+    counts: &HashMap<(String, String), u32>,
+) -> HashMap<String, String> {
+    let mut parent: HashMap<String, String> = puuids
+        .iter()
+        .map(|puuid| {
+            let key = puuid.to_lowercase();
+            (key.clone(), key)
+        })
+        .collect();
+
+    for ((a, b), count) in counts {
+        if *count < PARTY_INFER_MIN_SHARED || !parent.contains_key(a) || !parent.contains_key(b) {
+            continue;
+        }
+        let root_a = find_root(&mut parent, a);
+        let root_b = find_root(&mut parent, b);
+        if root_a != root_b {
+            parent.insert(root_b, root_a);
+        }
+    }
+
+    let keys: Vec<String> = parent.keys().cloned().collect();
+    let mut groups: HashMap<String, Vec<String>> = HashMap::new();
+    for key in keys {
+        let root = find_root(&mut parent, &key);
+        groups.entry(root).or_default().push(key);
+    }
+
+    let mut out = HashMap::new();
+    for members in groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        let mut sorted = members.clone();
+        sorted.sort();
+        let id = format!("h:{}", sorted[0]);
+        for member in sorted {
+            out.insert(member, id.clone());
+        }
+    }
+    out
+}
+
+/// Downloads recent match documents and infers which lobby players queued
+/// together. Runs in the background; an empty map just means "no grouping
+/// known yet".
+async fn infer_parties_from_history(
+    client: &reqwest::Client,
+    shard: &str,
+    headers: &HeaderMap,
+    puuids: &[String],
+) -> HashMap<String, String> {
+    let roster: HashSet<String> = puuids.iter().map(|p| p.to_lowercase()).collect();
+    let mut match_ids: Vec<String> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    for puuid in puuids {
+        let url = format!(
+            "https://pd.{shard}.a.pvp.net/match-history/v1/history/{puuid}?startIndex=0&endIndex={PARTY_INFER_MATCHES}"
+        );
+        let Ok(resp) = client.get(&url).headers(headers.clone()).send().await else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(history) = resp.json::<Value>().await else {
+            continue;
+        };
+        let Some(list) = history.get("History").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        for entry in list.iter().take(PARTY_INFER_MATCHES) {
+            let Some(id) = entry.get("MatchID").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if seen.insert(id.to_string()) {
+                match_ids.push(id.to_string());
+                if match_ids.len() >= PARTY_INFER_MAX_DETAILS {
+                    break;
+                }
+            }
+        }
+        if match_ids.len() >= PARTY_INFER_MAX_DETAILS {
+            break;
+        }
+    }
+
+    let mut counts: HashMap<(String, String), u32> = HashMap::new();
+    for id in match_ids {
+        let url = format!("https://pd.{shard}.a.pvp.net/match-details/v1/matches/{id}");
+        if let Ok(resp) = client.get(&url).headers(headers.clone()).send().await {
+            if resp.status().is_success() {
+                if let Ok(detail) = resp.json::<Value>().await {
+                    count_party_pairs(&detail, &roster, &mut counts);
+                }
+            }
+        }
+        // Keep the detail burst polite; this runs off the UI path anyway.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+
+    group_by_pair_counts(puuids, &counts)
+}
+
+/// Exact presence ids win over own-party knowledge, which wins over history
+/// inference. Groups that only contain one lobby player are dropped so solo
+/// players stay unlabelled.
+fn merge_party_tags(
+    puuids: &[String],
+    presence: &HashMap<String, String>,
+    own_party_id: Option<&str>,
+    own_members: &HashSet<String>,
+    inferred: &HashMap<String, String>,
+) -> HashMap<String, PartyTag> {
+    let mut tags: HashMap<String, PartyTag> = HashMap::new();
+    for puuid in puuids {
+        let key = puuid.to_lowercase();
+        if let Some(id) = presence.get(&key).filter(|id| !id.is_empty()) {
+            tags.insert(
+                key,
+                PartyTag {
+                    id: id.clone(),
+                    inferred: false,
+                },
+            );
+        } else if own_members.contains(&key) {
+            if let Some(id) = own_party_id.filter(|id| !id.is_empty()) {
+                tags.insert(
+                    key,
+                    PartyTag {
+                        id: id.to_string(),
+                        inferred: false,
+                    },
+                );
+            }
+        } else if let Some(id) = inferred.get(&key) {
+            tags.insert(
+                key,
+                PartyTag {
+                    id: id.clone(),
+                    inferred: true,
+                },
+            );
+        }
+    }
+
+    let mut sizes: HashMap<String, usize> = HashMap::new();
+    for tag in tags.values() {
+        *sizes.entry(tag.id.clone()).or_insert(0) += 1;
+    }
+    tags.retain(|_, tag| sizes.get(&tag.id).copied().unwrap_or(0) >= 2);
+    tags
+}
+
+async fn resolve_match_parties(
+    client: &reqwest::Client,
+    shard: &str,
+    headers: &HeaderMap,
+    match_key: &str,
+    puuids: &[String],
+    own: &PartyMembers,
+) -> HashMap<String, PartyTag> {
+    if puuids.len() < 2 || match_key.is_empty() {
+        return HashMap::new();
+    }
+
+    // A new match invalidates both the presence map and the inference.
+    if let Ok(mut guard) = party_resolution().lock() {
+        if guard.match_key != match_key {
+            *guard = PartyResolutionCache {
+                match_key: match_key.to_string(),
+                ..Default::default()
+            };
+        }
+    }
+
+    let presence_due = party_resolution()
+        .lock()
+        .map(|guard| {
+            guard
+                .presence_fetched_at
+                .map(|at| at.elapsed() >= PARTY_PRESENCE_TTL)
+                .unwrap_or(true)
+        })
+        .unwrap_or(false);
+    if presence_due {
+        let presence = fetch_presence_party_map().await;
+        if let Ok(mut guard) = party_resolution().lock() {
+            if guard.match_key == match_key {
+                guard.presence = presence;
+                guard.presence_fetched_at = Some(Instant::now());
+            }
+        }
+    }
+
+    let start_inference = if let Ok(mut guard) = party_resolution().lock() {
+        let due = guard
+            .inference_started_at
+            .map(|at| at.elapsed() >= PARTY_INFER_RETRY)
+            .unwrap_or(true);
+        if guard.match_key == match_key && due {
+            guard.inference_started_at = Some(Instant::now());
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if start_inference {
+        let client = client.clone();
+        let shard = shard.to_string();
+        let headers = headers.clone();
+        let puuids = puuids.to_vec();
+        let match_key = match_key.to_string();
+        tauri::async_runtime::spawn(async move {
+            let inferred = infer_parties_from_history(&client, &shard, &headers, &puuids).await;
+            if let Ok(mut guard) = party_resolution().lock() {
+                if guard.match_key == match_key {
+                    guard.inferred = inferred;
+                }
+            }
+        });
+    }
+
+    let (presence, inferred) = party_resolution()
+        .lock()
+        .map(|guard| (guard.presence.clone(), guard.inferred.clone()))
+        .unwrap_or_default();
+
+    merge_party_tags(
+        puuids,
+        &presence,
+        own.party_id.as_deref(),
+        &own.members,
+        &inferred,
+    )
+}
+
+/// Fills `party_size` from the resolved ids across the roster.
+fn fill_party_sizes(players: &mut [LiveMatchPlayerRaw]) {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for player in players.iter() {
+        if let Some(id) = &player.party_id {
+            *counts.entry(id.clone()).or_insert(0) += 1;
+        }
+    }
+    for player in players.iter_mut() {
+        player.party_size = player
+            .party_id
+            .as_ref()
+            .and_then(|id| counts.get(id))
+            .copied()
+            .unwrap_or(1);
+    }
+}
+
 async fn fetch_party_snapshot(
     remote_client: &reqwest::Client,
     shard: &str,
@@ -1155,9 +1600,13 @@ async fn fetch_party_snapshot(
             party_ready: p.get("IsReady").and_then(|v| v.as_bool()),
             is_party_owner: p.get("IsOwner").and_then(|v| v.as_bool()),
             party_id: Some(party_id.clone()),
+            party_size: 1,
+            party_inferred: false,
             is_party_member: true,
         });
     }
+
+    fill_party_sizes(&mut players);
 
     let queue_id = party
         .get("MatchmakingData")
@@ -2803,6 +3252,8 @@ async fn build_core_game_response(
 
     let glz_base = format!("https://glz-{glz_region}-1.{shard}.a.pvp.net");
     let party = fetch_party_members(remote_client, &glz_base, headers, self_puuid).await;
+    let party_tags =
+        resolve_match_parties(remote_client, shard, headers, match_id, &puuids, &party).await;
     let name_map = resolve_names(remote_client, shard, headers, &puuids).await;
 
     let mut players = Vec::new();
@@ -2843,6 +3294,7 @@ async fn build_core_game_response(
 
         let (game_name, tag_line) = resolve_player_name(&name_map, &puuid, p);
         let is_party_member = party.members.contains(&puuid.to_lowercase());
+        let party_tag = party_tags.get(&puuid.to_lowercase());
 
         players.push(LiveMatchPlayerRaw {
             puuid,
@@ -2864,14 +3316,14 @@ async fn build_core_game_response(
             pregame_tier: 0,
             party_ready: None,
             is_party_owner: None,
-            party_id: if is_party_member {
-                party.party_id.clone()
-            } else {
-                None
-            },
+            party_id: party_tag.map(|tag| tag.id.clone()),
+            party_size: 1,
+            party_inferred: party_tag.map(|tag| tag.inferred).unwrap_or(false),
             is_party_member,
         });
     }
+
+    fill_party_sizes(&mut players);
 
     LiveMatchResponse {
         status: "IN_GAME".to_string(),
@@ -3008,6 +3460,8 @@ async fn build_pregame_response(
 
     let glz_base = format!("https://glz-{glz_region}-1.{shard}.a.pvp.net");
     let party = fetch_party_members(remote_client, &glz_base, headers, self_puuid).await;
+    let party_tags =
+        resolve_match_parties(remote_client, shard, headers, match_id, &puuids, &party).await;
     let name_map = resolve_names(remote_client, shard, headers, &puuids).await;
 
     let mut players = Vec::new();
@@ -3044,6 +3498,7 @@ async fn build_pregame_response(
 
         let (game_name, tag_line) = resolve_player_name(&name_map, &puuid, p);
         let is_party_member = party.members.contains(&puuid.to_lowercase());
+        let party_tag = party_tags.get(&puuid.to_lowercase());
 
         players.push(LiveMatchPlayerRaw {
             puuid,
@@ -3073,14 +3528,14 @@ async fn build_pregame_response(
                 .unwrap_or(0),
             party_ready: None,
             is_party_owner: None,
-            party_id: if is_party_member {
-                party.party_id.clone()
-            } else {
-                None
-            },
+            party_id: party_tag.map(|tag| tag.id.clone()),
+            party_size: 1,
+            party_inferred: party_tag.map(|tag| tag.inferred).unwrap_or(false),
             is_party_member,
         });
     }
+
+    fill_party_sizes(&mut players);
 
     let ally_side = if self_team.eq_ignore_ascii_case("Red") {
         Some("attack".to_string())
@@ -3186,5 +3641,141 @@ mod tests {
             "CharacterSelectionState": "selected"
         });
         assert!(pregame_player_score(&real) > pregame_player_score(&zero));
+    }
+
+    #[test]
+    fn counts_shared_party_pairs_in_match_details() {
+        let detail = serde_json::json!({
+            "players": [
+                { "subject": "a", "partyId": "p1" },
+                { "subject": "b", "partyId": "p1" },
+                { "subject": "c", "partyId": "p2" },
+                { "subject": "stranger", "partyId": "p1" },
+                { "subject": "d", "partyId": "00000000-0000-0000-0000-000000000000" }
+            ]
+        });
+        let roster: HashSet<String> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let mut counts = HashMap::new();
+        count_party_pairs(&detail, &roster, &mut counts);
+
+        assert_eq!(counts.get(&("a".to_string(), "b".to_string())), Some(&1));
+        assert!(counts.keys().all(|(a, b)| a != "d" && b != "d"));
+        assert_eq!(counts.len(), 1);
+    }
+
+    #[test]
+    fn history_inference_needs_two_shared_matches() {
+        let puuids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut counts = HashMap::new();
+        // a and b shared a party twice; c only once with a.
+        counts.insert(("a".to_string(), "b".to_string()), 2);
+        counts.insert(("a".to_string(), "c".to_string()), 1);
+
+        let groups = group_by_pair_counts(&puuids, &counts);
+        assert_eq!(groups.get("a"), Some(&"h:a".to_string()));
+        assert_eq!(groups.get("b"), Some(&"h:a".to_string()));
+        assert_eq!(groups.get("c"), None);
+    }
+
+    #[test]
+    fn exact_presence_beats_history_inference() {
+        let puuids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let presence = HashMap::from([
+            ("a".to_string(), "real-1".to_string()),
+            ("b".to_string(), "real-1".to_string()),
+        ]);
+        let inferred = HashMap::from([
+            ("a".to_string(), "h:a".to_string()),
+            ("b".to_string(), "h:a".to_string()),
+            ("c".to_string(), "h:a".to_string()),
+        ]);
+        let tags = merge_party_tags(&puuids, &presence, None, &HashSet::new(), &inferred);
+
+        assert_eq!(tags["a"].id, "real-1");
+        assert!(!tags["a"].inferred);
+        assert_eq!(tags["b"].id, "real-1");
+        // c's only inferred partner was overwritten by the exact ids.
+        assert!(!tags.contains_key("c"));
+    }
+
+    #[test]
+    fn merge_keeps_groups_of_two_and_marks_them_inferred() {
+        let puuids = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let inferred = HashMap::from([
+            ("a".to_string(), "h:a".to_string()),
+            ("b".to_string(), "h:a".to_string()),
+        ]);
+        let tags = merge_party_tags(&puuids, &HashMap::new(), None, &HashSet::new(), &inferred);
+
+        assert_eq!(tags["a"].id, "h:a");
+        assert_eq!(tags["b"].id, "h:a");
+        assert!(tags["a"].inferred);
+        assert!(!tags.contains_key("c"));
+    }
+
+    #[test]
+    fn parses_presence_party_ids_nested_and_flat() {
+        let nested = BASE64.encode(r#"{"partyPresenceData":{"partyId":"party-1"}}"#);
+        let flat = BASE64.encode(r#"{"partyId":"party-2"}"#);
+        let zero = BASE64.encode(
+            r#"{"partyPresenceData":{"partyId":"00000000-0000-0000-0000-000000000000"}}"#,
+        );
+        let body = serde_json::json!({
+            "presences": [
+                { "puuid": "AAA", "private": nested },
+                { "puuid": "bbb", "private": flat },
+                { "puuid": "ccc", "private": zero },
+                { "puuid": "ddd", "private": "" }
+            ]
+        });
+
+        let map = parse_presence_parties(&body);
+        assert_eq!(map.get("aaa").map(String::as_str), Some("party-1"));
+        assert_eq!(map.get("bbb").map(String::as_str), Some("party-2"));
+        assert!(!map.contains_key("ccc"));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn party_sizes_come_from_resolved_ids() {        let mut players = vec![
+            test_player("a", Some("p1"), false),
+            test_player("b", Some("p1"), false),
+            test_player("c", Some("h:c"), true),
+            test_player("d", Some("h:c"), true),
+            test_player("e", None, false),
+        ];
+        fill_party_sizes(&mut players);
+        assert_eq!(players[0].party_size, 2);
+        assert_eq!(players[1].party_size, 2);
+        assert_eq!(players[2].party_size, 2);
+        assert!(players[2].party_inferred);
+        assert_eq!(players[4].party_size, 1);
+    }
+
+    fn test_player(puuid: &str, party_id: Option<&str>, inferred: bool) -> LiveMatchPlayerRaw {
+        LiveMatchPlayerRaw {
+            puuid: puuid.to_string(),
+            game_name: puuid.to_string(),
+            tag_line: "TEST".to_string(),
+            team_id: "Blue".to_string(),
+            is_ally: true,
+            is_self: false,
+            agent_id: String::new(),
+            selection_state: String::new(),
+            account_level: 0,
+            hide_account_level: false,
+            is_incognito: false,
+            card_id: String::new(),
+            pregame_tier: 0,
+            party_ready: None,
+            is_party_owner: None,
+            party_id: party_id.map(String::from),
+            party_size: 1,
+            party_inferred: inferred,
+            is_party_member: false,
+        }
     }
 }
