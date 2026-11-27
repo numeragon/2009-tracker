@@ -499,15 +499,15 @@ export function OverlayView() {
     : 8;
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-[#050607] p-2">
+    <div className="h-screen w-screen overflow-hidden bg-black p-2">
       <div
         className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border border-[rgba(190,169,127,0.2)] text-[#e9e7e1] shadow-[0_24px_80px_rgba(0,0,0,0.4)]"
         style={{
           background:
-            "radial-gradient(ellipse at 50% -20%, rgba(173,148,101,0.1), transparent 58%), rgba(9,10,12,0.97)",
+            "radial-gradient(ellipse at 50% -20%, rgba(173,148,101,0.075), transparent 58%), rgba(0,0,0,0.985)",
         }}
       >
-        <header className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.07)] bg-white/[0.018] px-5 py-3">
+        <header className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.07)] bg-white/[0.012] px-5 py-3">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="relative flex h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#bca77d] opacity-25" />
@@ -624,8 +624,8 @@ function TeamColumn({
     players.length > 0 &&
     players.every((player) => !player.agentId);
   return (
-    <div className="vt-overlay-team flex min-w-0 flex-1 flex-col overflow-hidden rounded-[12px] border border-[rgba(255,255,255,0.075)] bg-[#0b0c0e]/90">
-      <div className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.065)] bg-white/[0.018] px-4 py-2">
+    <div className="vt-overlay-team flex min-w-0 flex-1 flex-col overflow-hidden rounded-[12px] border border-[rgba(255,255,255,0.075)] bg-[#050505]">
+      <div className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.065)] bg-white/[0.012] px-4 py-2">
         <div className="flex items-center gap-2">
           <span
             className={`text-[9px] font-medium uppercase tracking-[0.2em] ${
