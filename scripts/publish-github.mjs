@@ -134,7 +134,7 @@ async function main() {
         tag_name: tag,
         target_commitish: "main",
         name: `#2009 tracker ${tag}`,
-        body: `# #2009 tracker ${tag}\n- Riot Mobile 2FA コード表示を、文字のぼかしと白い粒子の分散アニメーションに調整\n  - 全ての数字を均一にすりガラス状にぼかし、一部だけ欠けて見える状態を解消\n  - 文字形から生成した白い粒をコード全体に散らし、ゆっくり動かして数字として読みにくく\n  - カーソルを合わせると粒が消え、コードが鮮明に表示されます`,
+        body: `# #2009 tracker ${tag}\n- Riot Mobile 2FA コード表示を、文字のぼかしと白い粒子の分散アニメーションに調整\n  - 粒子数を増やし、コードを表示すると粒が数字の形へ集まる演出を追加\n  - 全ての数字を均一にすりガラス状にぼかし、一部だけ欠けて見える状態を解消\n  - カーソルを合わせると粒が集まって消え、コードが鮮明に表示されます\n- VALORANT ピック中オーバーレイの敵チーム表示を修正\n  - Riotの敵チームデータにTeamIDがない場合も、EnemyTeamの名簿から正しく敵側へ分類`,
         draft: false,
         prerelease: false,
       }),
@@ -171,7 +171,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `#2009 tracker v${version} - 2FAコード表示を、全桁のすりガラス状ぼかし＋文字形から生成した白い粒子の分散アニメーションに調整`,
+    notes: `#2009 tracker v${version} - 2FA粒子を増やし表示時に数字へ集める演出を追加・ピック中オーバーレイの敵チーム表示を修正`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {
