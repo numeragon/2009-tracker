@@ -134,7 +134,7 @@ async function main() {
         tag_name: tag,
         target_commitish: "main",
         name: `#2009 tracker ${tag}`,
-        body: `# #2009 tracker ${tag}\n- Riot Mobile 2FA コード表示を、文字のぼかしと白い粒子の分散アニメーションに調整\n  - 粒子数を増やし、コードを表示すると粒が数字の形へ集まる演出を追加\n  - 全ての数字を均一にすりガラス状にぼかし、一部だけ欠けて見える状態を解消\n  - カーソルを合わせると粒が集まって消え、コードが鮮明に表示されます\n- VALORANT ピック中オーバーレイの敵チーム表示を修正\n  - Riotの敵チームデータにTeamIDがない場合も、EnemyTeamの名簿から正しく敵側へ分類`,
+        body: `# #2009 tracker ${tag}\n- オーバーレイのショートカット設定を修正\n  - キー入力を設定画面から直接取得する方式に変更し、キーの組み合わせを確実に登録\n  - 初期キーを Alt + T に変更し、従来の既定値 F8 は初回起動時に移行\n- ゲーム内オーバーレイの見た目をシックなダークトーンに刷新\n  - 落ち着いたチャコールと控えめなシャンパンゴールドのアクセント、カードの余白・境界を調整\n- Riot Mobile 2FA コード表示を、文字のぼかしと白い粒子の分散アニメーションに調整\n  - 粒子数を増やし、コードを表示すると粒が数字の形へ集まる演出を追加\n- VALORANT ピック中オーバーレイの敵チーム表示を修正\n  - Riotの敵チームデータにTeamIDがない場合も、EnemyTeamの名簿から正しく敵側へ分類`,
         draft: false,
         prerelease: false,
       }),
@@ -171,7 +171,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `#2009 tracker v${version} - 2FA粒子を増やし表示時に数字へ集める演出を追加・ピック中オーバーレイの敵チーム表示を修正`,
+    notes: `#2009 tracker v${version} - オーバーレイのキー変更を修正、既定キー Alt+T・シックなデザインに変更`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {
