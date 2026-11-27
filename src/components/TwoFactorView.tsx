@@ -531,13 +531,20 @@ export function TwoFactorView() {
                       <div
                         className={`font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] select-none transition-all duration-300 ${
                           code
-                            ? "blur-[9px] opacity-55 group-hover:blur-[0px] group-hover:opacity-100 group-hover:select-text"
+                            ? "blur-[6px] opacity-60 group-hover:blur-[0px] group-hover:opacity-100 group-hover:select-text"
                             : "opacity-40"
                         }`}
                       >
                         {code ? formatTotpCode(code) : "--- ---"}
                       </div>
-                      {code && <div className="vt-frost" aria-hidden="true" />}
+                      {code && (
+                        <div
+                          className="vt-frost-text font-num text-[30px] leading-none tracking-[0.22em]"
+                          aria-hidden="true"
+                        >
+                          {formatTotpCode(code)}
+                        </div>
+                      )}
                     </div>
                     <p className="mt-2 text-[10px] text-[#5c5c5c] group-hover:text-[#8f8f8f] transition-colors">
                       マウスを重ねると表示
