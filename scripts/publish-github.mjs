@@ -134,7 +134,7 @@ async function main() {
         tag_name: tag,
         target_commitish: "main",
         name: `#2009 tracker ${tag}`,
-        body: `# #2009 tracker ${tag}\n- Riot Mobile 2FA 認証コードのすりガラス表示を修正\n  - 一部環境では数字がそのまま読み取れてしまう問題を解消しました\n  - 数字自体にぼかしを適用して確実に隠す方式に変更し、すりガラスのノイズ質感・ガラス縁は上から重ねる装飾として維持\n  - カードにマウスを重ねると従来どおりコードが見えます`,
+        body: `# #2009 tracker ${tag}\n- Riot Mobile 2FA 認証コードのすりガラス表示を刷新\n  - 板を上から貼るような見た目をやめ、文字の形に沿ってぼかした「すりガラス」に変更\n  - 文字の形の中で粒（ノイズ）が流れ続けるアニメーションを追加\n  - カーソルを合わせると従来どおりコードが見えます`,
         draft: false,
         prerelease: false,
       }),
@@ -171,7 +171,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `#2009 tracker v${version} - 2FA認証コードのすりガラス表示の修正（一部環境で数字が読み取れてしまう問題を解消）`,
+    notes: `#2009 tracker v${version} - 2FA認証コードのすりガラス表示を刷新（文字の形に沿ったぼかし＋粒が流れるアニメーション）`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {
