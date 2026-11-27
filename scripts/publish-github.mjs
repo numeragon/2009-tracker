@@ -134,7 +134,7 @@ async function main() {
         tag_name: tag,
         target_commitish: "main",
         name: `#2009 tracker ${tag}`,
-        body: `# #2009 tracker ${tag}\n- ゲーム内オーバーレイの背景色を黒に変更\n  - シックなゴールドのアクセントと視認性は維持`,
+        body: `# #2009 tracker ${tag}\n- ゲーム内オーバーレイを黒・白・グレーのモノトーンに統一\n  - ゴールド系のアクセントを取り除き、黒背景とニュートラルなグレーの境界・ハイライトに変更`,
         draft: false,
         prerelease: false,
       }),
@@ -171,7 +171,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `#2009 tracker v${version} - ゲーム内オーバーレイを黒背景に変更`,
+    notes: `#2009 tracker v${version} - オーバーレイを黒背景のモノトーン配色に変更（ゴールドアクセントを削除）`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {
