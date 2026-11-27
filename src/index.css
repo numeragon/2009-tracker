@@ -122,44 +122,13 @@ img {
   animation: vtPulse 1.6s ease-in-out infinite;
 }
 
-/*
- * Riot2FA code veil: at rest the code exists only as drifting white
- * particles. The real digits are fully hidden (opacity 0 in the markup),
- * and an exact copy of the glyphs is clipped to a thresholded noise
- * texture (background-clip: text) so bright, widely spaced white grains
- * drift inside the letter forms. Hovering the card fades the grains out
- * while the real digits fade in, as if the particles condense back into
- * text. With nothing but scattered grains rendered, the code cannot be
- * read or captured at rest.
- */
-.vt-frost-text {
-  position: absolute;
-  inset: 0;
+.vt-frost-particles {
   pointer-events: none;
-  color: transparent;
-  -webkit-text-fill-color: transparent;
-  background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.1' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='table' tableValues='0.9 1'/%3E%3CfeFuncG type='table' tableValues='0.9 1'/%3E%3CfeFuncB type='table' tableValues='0.9 1'/%3E%3CfeFuncA type='discrete' tableValues='0 0 0 0.5 1'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E"),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.22' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='table' tableValues='0.9 1'/%3E%3CfeFuncG type='table' tableValues='0.9 1'/%3E%3CfeFuncB type='table' tableValues='0.9 1'/%3E%3CfeFuncA type='discrete' tableValues='0 0 0 0.4 0.8'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E");
-  background-size: 160px 160px, 120px 120px;
-  background-clip: text;
-  -webkit-background-clip: text;
-  filter: blur(1px);
-  animation: vtFrostGrain 5s linear infinite;
-  transition: opacity 240ms cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: visible;
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.38));
 }
 
-/* Each layer must travel a multiple of its own tile size to loop seamlessly. */
-@keyframes vtFrostGrain {
-  from {
-    background-position: 0 0, 0 0;
-  }
-  to {
-    background-position: 160px 160px, 240px 240px;
-  }
-}
-
-.group:hover .vt-frost-text {
+.group:hover .vt-frost-particles {
   opacity: 0;
 }
 

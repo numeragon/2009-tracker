@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AlertTriangle,
@@ -42,6 +42,190 @@ interface ImportedAccount {
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+function FrostedTotpCode({ code }: { code: string }) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const formattedCode = formatTotpCode(code);
+
+  useEffect(() => {
+    const text = textRef.current;
+    const canvas = canvasRef.current;
+    if (!text || !canvas) return;
+
+    let frame = 0;
+    let particles: Array<{
+      x: number;
+      y: number;
+      radius: number;
+      alpha: number;
+      phase: number;
+      speed: number;
+      driftX: number;
+      driftY: number;
+    }> = [];
+    let width = 0;
+    let height = 0;
+    let dpr = 1;
+    let startedAt = 0;
+    let cancelled = false;
+
+    const render = (time: number) => {
+      if (cancelled) return;
+      const context = canvas.getContext("2d");
+      if (!context) return;
+
+      if (!startedAt) startedAt = time;
+      const elapsed = (time - startedAt) / 1000;
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.clearRect(0, 0, width, height);
+      context.fillStyle = "#fff";
+      context.shadowColor = "rgba(255,255,255,0.85)";
+      context.shadowBlur = 5;
+
+      for (const particle of particles) {
+        const x =
+          particle.x +
+          Math.sin(elapsed * particle.speed + particle.phase) * particle.driftX;
+        const y =
+          particle.y +
+          Math.cos(elapsed * particle.speed * 0.73 + particle.phase) *
+            particle.driftY;
+        const shimmer =
+          0.72 + Math.sin(elapsed * particle.speed * 1.7 + particle.phase) * 0.2;
+        context.globalAlpha = particle.alpha * shimmer;
+        context.beginPath();
+        context.arc(x, y, particle.radius, 0, Math.PI * 2);
+        context.fill();
+      }
+      context.globalAlpha = 1;
+      context.shadowBlur = 0;
+      frame = window.requestAnimationFrame(render);
+    };
+
+    const rebuildParticles = () => {
+      const bounds = text.getBoundingClientRect();
+      if (!bounds.width || !bounds.height) return;
+
+      const particlePadding = 28;
+      width = bounds.width + particlePadding * 2;
+      height = bounds.height + particlePadding * 2;
+      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.ceil(width * dpr);
+      canvas.height = Math.ceil(height * dpr);
+
+      const mask = document.createElement("canvas");
+      mask.width = canvas.width;
+      mask.height = canvas.height;
+      const maskContext = mask.getContext("2d", { willReadFrequently: true });
+      if (!maskContext) return;
+
+      maskContext.scale(dpr, dpr);
+      const style = window.getComputedStyle(text);
+      const fontSize = Number.parseFloat(style.fontSize);
+      const letterSpacing = Number.parseFloat(style.letterSpacing) || 0;
+      maskContext.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      maskContext.textBaseline = "top";
+      maskContext.fillStyle = "#fff";
+
+      let cursorX = particlePadding;
+      const textY =
+        particlePadding + Math.max(0, (bounds.height - fontSize) / 2);
+      for (const character of formattedCode) {
+        maskContext.fillText(character, cursorX, textY);
+        cursorX += maskContext.measureText(character).width + letterSpacing;
+      }
+
+      const image = maskContext.getImageData(0, 0, mask.width, mask.height);
+      const candidates: Array<{ x: number; y: number }> = [];
+      const sampleStep = Math.max(3, Math.round(dpr * 2.5));
+      for (let y = 0; y < mask.height; y += sampleStep) {
+        for (let x = 0; x < mask.width; x += sampleStep) {
+          const alpha = image.data[(y * mask.width + x) * 4 + 3];
+          if (alpha > 100 && Math.random() < 0.8) {
+            candidates.push({ x: x / dpr, y: y / dpr });
+          }
+        }
+      }
+
+      for (let i = candidates.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
+      }
+
+      particles = [];
+      const targetCount = Math.min(formattedCode.replace(/\s/g, "").length * 6, 48);
+      for (const candidate of candidates) {
+        if (
+          particles.some(
+            (particle) =>
+              Math.hypot(particle.x - candidate.x, particle.y - candidate.y) < 3,
+          )
+        ) {
+          continue;
+        }
+        particles.push({
+          // Sample from the actual glyphs, then scatter most of each
+          // particle's travel across the whole code instead of preserving
+          // the digit silhouette.
+          x:
+            particlePadding +
+            candidate.x * 0.15 +
+            Math.random() * bounds.width * 0.85,
+          y:
+            particlePadding +
+            candidate.y * 0.15 +
+            Math.random() * bounds.height * 0.7,
+          radius: 1.1 + Math.random() * 1.3,
+          alpha: 0.68 + Math.random() * 0.32,
+          phase: Math.random() * Math.PI * 2,
+          speed: 0.55 + Math.random() * 0.9,
+          driftX: 4 + Math.random() * 7,
+          driftY: 2 + Math.random() * 5,
+        });
+        if (particles.length >= targetCount) break;
+      }
+    };
+
+    const start = async () => {
+      if (document.fonts?.ready) await document.fonts.ready;
+      if (cancelled) return;
+      rebuildParticles();
+      frame = window.requestAnimationFrame(render);
+    };
+
+    const observer = new ResizeObserver(rebuildParticles);
+    observer.observe(text);
+    void start();
+
+    return () => {
+      cancelled = true;
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
+  }, [formattedCode]);
+
+  return (
+    <div className="relative inline-block">
+      <span
+        ref={textRef}
+        className="inline-block font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] opacity-40 blur-[12px] select-none transition-all duration-300 group-hover:blur-[0px] group-hover:opacity-100 group-hover:select-text"
+      >
+        {formattedCode}
+      </span>
+      <canvas
+        ref={canvasRef}
+        className="vt-frost-particles absolute h-full transition-opacity duration-300"
+        style={{
+          inset: "-28px",
+          width: "calc(100% + 56px)",
+          height: "calc(100% + 56px)",
+        }}
+        aria-hidden="true"
+      />
+    </div>
+  );
 }
 
 export function TwoFactorView() {
@@ -527,25 +711,13 @@ export function TwoFactorView() {
 
                 <div className="mt-4 flex items-end justify-between gap-4">
                   <div>
-                    <div className="relative inline-block">
-                      <div
-                        className={`font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] select-none transition-all duration-300 ${
-                          code
-                            ? "opacity-0 blur-[3px] group-hover:blur-[0px] group-hover:opacity-100 group-hover:select-text"
-                            : "opacity-40"
-                        }`}
-                      >
-                        {code ? formatTotpCode(code) : "--- ---"}
+                    {code ? (
+                      <FrostedTotpCode code={code} />
+                    ) : (
+                      <div className="font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] opacity-40">
+                        --- ---
                       </div>
-                      {code && (
-                        <div
-                          className="vt-frost-text font-num text-[30px] leading-none tracking-[0.22em]"
-                          aria-hidden="true"
-                        >
-                          {formatTotpCode(code)}
-                        </div>
-                      )}
-                    </div>
+                    )}
                     <p className="mt-2 text-[10px] text-[#5c5c5c] group-hover:text-[#8f8f8f] transition-colors">
                       マウスを重ねると表示
                     </p>
