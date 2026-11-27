@@ -501,17 +501,17 @@ export function OverlayView() {
   return (
     <div className="h-screen w-screen overflow-hidden bg-black p-2">
       <div
-        className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border border-[rgba(190,169,127,0.2)] text-[#e9e7e1] shadow-[0_24px_80px_rgba(0,0,0,0.4)]"
+        className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border border-[rgba(255,255,255,0.12)] text-[#e9e7e1] shadow-[0_24px_80px_rgba(0,0,0,0.4)]"
         style={{
           background:
-            "radial-gradient(ellipse at 50% -20%, rgba(173,148,101,0.075), transparent 58%), rgba(0,0,0,0.985)",
+            "radial-gradient(ellipse at 50% -20%, rgba(255,255,255,0.035), transparent 58%), rgba(0,0,0,0.985)",
         }}
       >
         <header className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.07)] bg-white/[0.012] px-5 py-3">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#bca77d] opacity-25" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-[#bca77d]" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#bdbdbd] opacity-25" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-[#bdbdbd]" />
             </span>
             <span className="text-[10px] font-semibold tracking-[0.22em] text-[#d8d1c2]">
               {phaseLabel}
@@ -521,7 +521,7 @@ export function OverlayView() {
             </span>
           </div>
           <div className="flex shrink-0 items-center gap-2 text-[9px] text-[#77766f]">
-            <span className="rounded-[5px] border border-[rgba(190,169,127,0.2)] bg-white/[0.035] px-1.5 py-0.5 font-num text-[#bdb39e]">
+            <span className="rounded-[5px] border border-white/[0.14] bg-white/[0.035] px-1.5 py-0.5 font-num text-[#c5c5c5]">
               {hotkeyLabel}
             </span>
             <span>表示 / 非表示</span>
@@ -629,14 +629,14 @@ function TeamColumn({
         <div className="flex items-center gap-2">
           <span
             className={`text-[9px] font-medium uppercase tracking-[0.2em] ${
-              isEnemy ? "text-[#b5aaa1]" : "text-[#c1b28f]"
+              isEnemy ? "text-[#999999]" : "text-[#d0d0d0]"
             }`}
           >
             {title}
           </span>
           {isEnemy && isPregame && (
             <span className="flex items-center gap-1 text-[8px] text-[#77766f]">
-              <span className="h-1 w-1 animate-pulse rounded-full bg-[#bca77d]" />
+              <span className="h-1 w-1 animate-pulse rounded-full bg-[#a8a8a8]" />
               1.2秒更新
             </span>
           )}
@@ -728,13 +728,13 @@ function PlayerRow({
       }
       className={`flex items-center gap-3 rounded-[9px] border border-transparent px-2.5 py-2 transition-colors duration-150 ${
         hovered
-          ? "border-[rgba(190,169,127,0.12)] bg-[rgba(190,169,127,0.085)]"
+          ? "border-white/[0.1] bg-white/[0.055]"
           : player.isSelf
             ? "bg-white/[0.035]"
             : ""
       }`}
     >
-      <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-[7px] border border-[rgba(190,169,127,0.14)] bg-[#08090a]">
+      <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-[7px] border border-white/[0.1] bg-[#08090a]">
         {agent?.displayIcon ? (
           <img
             src={agent.displayIcon}
@@ -763,7 +763,7 @@ function PlayerRow({
             </span>
           )}
           {player.isSelf && (
-            <span className="shrink-0 rounded border border-[rgba(190,169,127,0.35)] px-1 text-[8px] text-[#d1c3a3]">
+            <span className="shrink-0 rounded border border-white/[0.24] px-1 text-[8px] text-[#dedede]">
               YOU
             </span>
           )}
@@ -771,7 +771,7 @@ function PlayerRow({
             <span
               className={`shrink-0 rounded border px-1 text-[8px] ${
                 label.isOwn
-                  ? "border-[rgba(190,169,127,0.32)] text-[#cfc09f]"
+                  ? "border-white/[0.2] text-[#d6d6d6]"
                   : label.inferred
                     ? "border-dashed border-[rgba(255,255,255,0.22)] text-[#8f8f8f]"
                     : "border-[rgba(255,255,255,0.16)] text-[#8f8f8f]"
@@ -789,7 +789,7 @@ function PlayerRow({
             <span
               className={`shrink-0 rounded border px-1 text-[8px] ${
                 revealed
-                  ? "border-[rgba(190,169,127,0.28)] text-[#cfc09f]"
+                  ? "border-white/[0.18] text-[#d0d0d0]"
                   : "border-[rgba(255,255,255,0.16)] text-[#8f8f8f]"
               }`}
               title={
