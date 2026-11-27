@@ -151,8 +151,8 @@ impl Default for Config {
             editor_mods: 0,
             folder_vk: 0,
             folder_mods: 0,
-            overlay_vk: 0x77, // F8
-            overlay_mods: 0,
+            overlay_vk: 0x54, // T
+            overlay_mods: 0x1, // MOD_ALT
         }
     }
 }
@@ -235,6 +235,16 @@ impl Config {
     }
 }
 
+fn migrate_legacy_overlay_default(cfg: &mut Config) -> bool {
+    if cfg.overlay_vk == 0x77 && cfg.overlay_mods == 0 {
+        cfg.overlay_vk = 0x54; // T
+        cfg.overlay_mods = 0x1; // MOD_ALT
+        true
+    } else {
+        false
+    }
+}
+
 pub fn config_path() -> PathBuf {
     app_dir().join("recorder_config.json")
 }
@@ -248,7 +258,11 @@ pub fn load() -> Config {
         .ok()
         .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
         .unwrap_or_default();
+    let migrated = migrate_legacy_overlay_default(&mut cfg);
     cfg.sanitize();
+    if migrated {
+        let _ = save(&cfg);
+    }
     cfg
 }
 
@@ -274,4 +288,37 @@ fn default_output_dir() -> PathBuf {
         .unwrap_or_default()
         .join("Videos")
         .join("2009 tracker")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlay_shortcut_defaults_to_alt_t() {
+        let cfg = Config::default();
+        assert_eq!(cfg.hotkey(GlobalAction::OverlayToggle), (0x54, 0x1));
+    }
+
+    #[test]
+    fn old_default_f8_is_migrated_to_alt_t() {
+        let mut cfg = Config {
+            overlay_vk: 0x77,
+            overlay_mods: 0,
+            ..Config::default()
+        };
+        assert!(migrate_legacy_overlay_default(&mut cfg));
+        assert_eq!(cfg.hotkey(GlobalAction::OverlayToggle), (0x54, 0x1));
+    }
+
+    #[test]
+    fn user_custom_overlay_shortcut_is_preserved() {
+        let mut cfg = Config {
+            overlay_vk: 0x46,
+            overlay_mods: 0x2,
+            ..Config::default()
+        };
+        assert!(!migrate_legacy_overlay_default(&mut cfg));
+        assert_eq!(cfg.hotkey(GlobalAction::OverlayToggle), (0x46, 0x2));
+    }
 }

@@ -3,7 +3,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { Eye, EyeOff, Keyboard, Loader2, MonitorPlay } from "lucide-react";
 import {
   replayGetState,
-  replayPollPressedKey,
   replaySuspendHotkeys,
   replayUpdateConfig,
   type ReplayState,
@@ -80,41 +79,77 @@ export function OverlaySettingsSection() {
     }
   }, []);
 
-  // Same capture loop as the recorder hotkeys: wait for the click's keys to be
-  // released, then take the first pressed key.
+  // Capture in the settings webview instead of polling Win32 key state. This
+  // reliably preserves modifier keys such as Alt while global hotkeys are
+  // temporarily unregistered.
   useEffect(() => {
     if (!capturing || !isTauriRuntime()) return;
     let cancelled = false;
     let armed = false;
-    void replaySuspendHotkeys(true).catch(() => {});
+    let busy = false;
+    let suspended = false;
+    void replaySuspendHotkeys(true)
+      .then(() => {
+        if (cancelled) {
+          void replaySuspendHotkeys(false).catch(() => {});
+          return;
+        }
+        suspended = true;
+        armed = true;
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : String(err));
+          setCapturing(false);
+        }
+      });
 
-    const timer = window.setInterval(async () => {
-      const pressed = await replayPollPressedKey().catch(() => null);
-      if (cancelled) return;
-      if (!armed) {
-        if (!pressed) armed = true;
-        return;
-      }
-      if (!pressed) return;
-
-      if (pressed.vk === 0x1b) {
-        await replaySuspendHotkeys(false).catch(() => {});
-        if (!cancelled) setCapturing(false);
-        return;
-      }
-
-      const vk = pressed.vk === 0x08 || pressed.vk === 0x2e ? 0 : pressed.vk;
-      const mods = vk === 0 ? 0 : pressed.mods;
+    const resumeHotkeys = async () => {
+      if (!suspended) return;
+      suspended = false;
       await replaySuspendHotkeys(false).catch(() => {});
+    };
+
+    const handleKeyDown = async (event: KeyboardEvent) => {
+      if (!armed || busy || event.repeat) return;
+      if (["Alt", "Control", "Shift", "Meta"].includes(event.key)) {
+        event.preventDefault();
+        return;
+      }
+      const vk = event.keyCode;
+      if (!vk) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      busy = true;
+      armed = false;
+      await resumeHotkeys();
       if (cancelled) return;
 
+      if (vk === 0x1b) {
+        setCapturing(false);
+        return;
+      }
+
+      const clearKey =
+        (vk === 0x08 || vk === 0x2e) &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.shiftKey;
+      const nextVk = clearKey ? 0 : vk;
+      const nextMods = clearKey
+        ? 0
+        : (event.altKey ? 0x1 : 0) |
+          (event.ctrlKey ? 0x2 : 0) |
+          (event.shiftKey ? 0x4 : 0);
       const current = stateRef.current;
+
       if (current) {
         try {
           const updated = await replayUpdateConfig({
             ...current.config,
-            overlayVk: vk,
-            overlayMods: mods,
+            overlayVk: nextVk,
+            overlayMods: nextMods,
           });
           if (!cancelled) {
             stateRef.current = updated;
@@ -128,12 +163,14 @@ export function OverlaySettingsSection() {
         }
       }
       if (!cancelled) setCapturing(false);
-    }, 40);
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
 
     return () => {
       cancelled = true;
-      window.clearInterval(timer);
-      void replaySuspendHotkeys(false).catch(() => {});
+      window.removeEventListener("keydown", handleKeyDown, true);
+      void resumeHotkeys();
     };
   }, [capturing]);
 
@@ -180,13 +217,20 @@ export function OverlaySettingsSection() {
           <div className="min-w-0">
             <p className="text-xs text-[#ededed]">表示 / 非表示ショートカット</p>
             <p className="text-[11px] text-[#5c5c5c] mt-0.5">
-              ゲーム中でもグローバルに切り替えます。Esc でキャンセル、Backspace / Delete で解除。
+              ゲーム中でも使えるグローバルキーです。クリックして入力、Esc でキャンセル、Backspace / Delete で解除。
             </p>
           </div>
           <button
             type="button"
-            onClick={() => setCapturing(true)}
-            disabled={capturing}
+            onClick={() => {
+              if (!isTauriRuntime()) {
+                setError("ショートカットの変更はデスクトップアプリ（.exe）でのみ利用できます。");
+                return;
+              }
+              setError(null);
+              setCapturing(true);
+            }}
+            disabled={!state || capturing}
             className={`inline-flex h-9 min-w-[128px] shrink-0 items-center justify-center gap-1.5 rounded-[10px] border px-3 font-num text-xs transition-colors duration-150 ${
               capturing
                 ? "border-white/25 bg-white/[0.06] text-[#ededed]"

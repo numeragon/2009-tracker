@@ -202,7 +202,7 @@ export function OverlayView() {
     enemyLocked: 0,
     enemySize: 0,
   });
-  const [hotkeyLabel, setHotkeyLabel] = useState("F8");
+  const [hotkeyLabel, setHotkeyLabel] = useState("Alt + T");
   const [hovered, setHovered] = useState<string | null>(null);
   const [hoverRect, setHoverRect] = useState<DOMRect | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -499,27 +499,32 @@ export function OverlayView() {
     : 8;
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-[#060606] p-2">
+    <div className="h-screen w-screen overflow-hidden bg-[#050607] p-2">
       <div
-        className="flex h-full w-full flex-col overflow-hidden rounded-[14px] border border-[rgba(255,255,255,0.12)] text-[#ededed]"
-        style={{ backgroundColor: "rgba(6, 6, 6, 0.96)" }}
+        className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border border-[rgba(190,169,127,0.2)] text-[#e9e7e1] shadow-[0_24px_80px_rgba(0,0,0,0.4)]"
+        style={{
+          background:
+            "radial-gradient(ellipse at 50% -20%, rgba(173,148,101,0.1), transparent 58%), rgba(9,10,12,0.97)",
+        }}
       >
-        <header className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.08)] px-4 py-2">
+        <header className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.07)] bg-white/[0.018] px-5 py-3">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#ededed] opacity-40" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-[#ededed]" />
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#bca77d] opacity-25" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-[#bca77d]" />
             </span>
-            <span className="text-[11px] font-medium tracking-[0.2em] text-[#ededed]">
+            <span className="text-[10px] font-semibold tracking-[0.22em] text-[#d8d1c2]">
               {phaseLabel}
             </span>
-            <span className="truncate text-[10px] text-[#8f8f8f]">
+            <span className="truncate border-l border-white/[0.12] pl-2.5 text-[10px] text-[#92908a]">
               {mapLabel} · {modeLabel}
             </span>
           </div>
-          <div className="flex shrink-0 items-center gap-3 text-[9px] text-[#5c5c5c]">
-            <span className="font-num">{hotkeyLabel}</span>
-            <span>で表示 / 非表示</span>
+          <div className="flex shrink-0 items-center gap-2 text-[9px] text-[#77766f]">
+            <span className="rounded-[5px] border border-[rgba(190,169,127,0.2)] bg-white/[0.035] px-1.5 py-0.5 font-num text-[#bdb39e]">
+              {hotkeyLabel}
+            </span>
+            <span>表示 / 非表示</span>
           </div>
         </header>
 
@@ -560,9 +565,9 @@ export function OverlayView() {
           )}
         </div>
 
-        <footer className="flex shrink-0 items-center justify-between border-t border-[rgba(255,255,255,0.06)] px-4 py-1 text-[8px] text-[#3a3a3a]">
-          <span>#2009 tracker overlay</span>
-          <span className="font-num">
+        <footer className="flex shrink-0 items-center justify-between border-t border-[rgba(255,255,255,0.055)] px-5 py-1.5 text-[8px] tracking-[0.08em] text-[#55544f]">
+          <span>#2009 TRACKER · LIVE</span>
+          <span className="font-num text-[#77766f]">
             {new Date(now).toLocaleTimeString("ja-JP", {
               hour: "2-digit",
               minute: "2-digit",
@@ -619,37 +624,41 @@ function TeamColumn({
     players.length > 0 &&
     players.every((player) => !player.agentId);
   return (
-    <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-[10px] border border-[rgba(255,255,255,0.08)] bg-white/[0.02]">
-      <div className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.08)] px-3 py-1.5">
+    <div className="vt-overlay-team flex min-w-0 flex-1 flex-col overflow-hidden rounded-[12px] border border-[rgba(255,255,255,0.075)] bg-[#0b0c0e]/90">
+      <div className="flex shrink-0 items-center justify-between border-b border-[rgba(255,255,255,0.065)] bg-white/[0.018] px-4 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-[9px] uppercase tracking-[0.18em] text-[#8f8f8f]">
+          <span
+            className={`text-[9px] font-medium uppercase tracking-[0.2em] ${
+              isEnemy ? "text-[#b5aaa1]" : "text-[#c1b28f]"
+            }`}
+          >
             {title}
           </span>
           {isEnemy && isPregame && (
-            <span className="flex items-center gap-1 text-[8px] text-[#8f8f8f]">
-              <span className="h-1 w-1 animate-pulse rounded-full bg-[#ededed]" />
+            <span className="flex items-center gap-1 text-[8px] text-[#77766f]">
+              <span className="h-1 w-1 animate-pulse rounded-full bg-[#bca77d]" />
               1.2秒更新
             </span>
           )}
         </div>
         <div className="flex items-center gap-2">
           {isEnemy && isPregame && pickInfo && (pickInfo.enemyLocked > 0 || pickInfo.enemySize > 0) && (
-            <span className="font-num text-[8px] text-[#8f8f8f]">
+            <span className="rounded border border-white/[0.07] px-1.5 py-0.5 font-num text-[8px] text-[#9d9789]">
               ロック {pickInfo.enemyLocked}/{pickInfo.enemySize > 0 ? pickInfo.enemySize : players.length}
             </span>
           )}
-          <span className="font-num text-[9px] text-[#5c5c5c]">
+          <span className="font-num text-[9px] text-[#6d6a63]">
             {players.length}
           </span>
         </div>
       </div>
       {enemyPicksHidden && (
-        <div className="shrink-0 border-b border-[rgba(255,255,255,0.06)] px-3 py-1 text-[8px] leading-relaxed text-[#5c5c5c]">
+        <div className="shrink-0 border-b border-[rgba(255,255,255,0.055)] px-4 py-1.5 text-[8px] leading-relaxed text-[#6d6a63]">
           敵のピックはRiotが試合開始まで公開しない場合があります（ロック数のみ更新）
         </div>
       )}
       <div
-        className="flex min-h-0 flex-1 flex-col gap-1 p-1.5"
+        className="flex min-h-0 flex-1 flex-col gap-1 p-2"
         onMouseLeave={() => onHover(null, null)}
       >
         {players.map((player) => (
@@ -717,11 +726,15 @@ function PlayerRow({
       onMouseEnter={(event) =>
         onHover(player.puuid, event.currentTarget.getBoundingClientRect())
       }
-      className={`flex items-center gap-3 rounded-[8px] px-2.5 py-2 transition-colors duration-100 ${
-        hovered ? "bg-white/[0.09]" : player.isSelf ? "bg-white/[0.04]" : ""
+      className={`flex items-center gap-3 rounded-[9px] border border-transparent px-2.5 py-2 transition-colors duration-150 ${
+        hovered
+          ? "border-[rgba(190,169,127,0.12)] bg-[rgba(190,169,127,0.085)]"
+          : player.isSelf
+            ? "bg-white/[0.035]"
+            : ""
       }`}
     >
-      <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-[6px] border border-[rgba(255,255,255,0.1)] bg-black">
+      <div className="relative h-9 w-9 shrink-0 overflow-hidden rounded-[7px] border border-[rgba(190,169,127,0.14)] bg-[#08090a]">
         {agent?.displayIcon ? (
           <img
             src={agent.displayIcon}
@@ -750,7 +763,7 @@ function PlayerRow({
             </span>
           )}
           {player.isSelf && (
-            <span className="shrink-0 rounded border border-white/25 px-1 text-[8px] text-[#ededed]">
+            <span className="shrink-0 rounded border border-[rgba(190,169,127,0.35)] px-1 text-[8px] text-[#d1c3a3]">
               YOU
             </span>
           )}
@@ -758,7 +771,7 @@ function PlayerRow({
             <span
               className={`shrink-0 rounded border px-1 text-[8px] ${
                 label.isOwn
-                  ? "border-white/30 text-[#ededed]"
+                  ? "border-[rgba(190,169,127,0.32)] text-[#cfc09f]"
                   : label.inferred
                     ? "border-dashed border-[rgba(255,255,255,0.22)] text-[#8f8f8f]"
                     : "border-[rgba(255,255,255,0.16)] text-[#8f8f8f]"
@@ -776,7 +789,7 @@ function PlayerRow({
             <span
               className={`shrink-0 rounded border px-1 text-[8px] ${
                 revealed
-                  ? "border-white/25 text-[#ededed]"
+                  ? "border-[rgba(190,169,127,0.28)] text-[#cfc09f]"
                   : "border-[rgba(255,255,255,0.16)] text-[#8f8f8f]"
               }`}
               title={
