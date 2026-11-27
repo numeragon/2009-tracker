@@ -134,7 +134,7 @@ async function main() {
         tag_name: tag,
         target_commitish: "main",
         name: `#2009 tracker ${tag}`,
-        body: `# #2009 tracker ${tag}\n- Riot Mobile 2FA 認証コードのすりガラス表示を調整\n  - 粒をはっきり見える大きさ（15〜20px級）に引き上げ、間隔を空けた疠なパーティクルに変更\n  - 下の文字のぼかしを強化（blur 12px）し、コードとして認識できない状態に改善\n  - カーソルを合わせると従来どおりコードが見えます`,
+        body: `# #2009 tracker ${tag}\n- Riot Mobile 2FA 認証コードの表示を「白い粒の散布」方式に変更\n  - 通常時は文字そのものを完全に非表示にし、文字の形に沿って白い粒が漂う状態のみを表示\n  - 粒は8〜9px程度の白い粒と細かい塵の2層構成で、間隔を空けて散らばりながら流れます\n  - カーソルを合わせると粒が引き、文字がフェードイン`,
         draft: false,
         prerelease: false,
       }),
@@ -171,7 +171,7 @@ async function main() {
   const sigContent = fs.readFileSync(sigSrc, "utf8").trim();
   const latestJson = {
     version,
-    notes: `#2009 tracker v${version} - 2FA認証コードのすりガラス調整（粒を大きく間隔を開けた表示に変更し、文字を認識できない程度までぼかしを強化）`,
+    notes: `#2009 tracker v${version} - 2FA認証コード表示を「文字が白い粒に分散して流れる」方式に変更（通常時は文字を完全非表示にし粒のみ表示）`,
     pub_date: new Date().toISOString(),
     platforms: {
       "windows-x86_64": {
