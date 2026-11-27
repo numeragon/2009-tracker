@@ -526,19 +526,17 @@ export function TwoFactorView() {
                 </div>
 
                 <div className="mt-4 flex items-end justify-between gap-4">
-                  <div className="relative">
-                    <div
-                      className={`font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] select-none transition-all duration-300 ${
-                        code
-                          ? "blur-[10px] opacity-70 group-hover:blur-[0px] group-hover:opacity-100 group-hover:select-text"
-                          : "opacity-40"
-                      }`}
-                    >
-                      {code ? formatTotpCode(code) : "--- ---"}
+                  <div>
+                    <div className="relative inline-block">
+                      <div
+                        className={`font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] select-none ${
+                          code ? "group-hover:select-text" : "opacity-40"
+                        }`}
+                      >
+                        {code ? formatTotpCode(code) : "--- ---"}
+                      </div>
+                      {code && <div className="vt-frost" aria-hidden="true" />}
                     </div>
-                    {code && (
-                      <div className="pointer-events-none absolute inset-0 rounded-[6px] bg-white/[0.05] backdrop-blur-[2px] transition-opacity duration-300 group-hover:opacity-0" />
-                    )}
                     <p className="mt-2 text-[10px] text-[#5c5c5c] group-hover:text-[#8f8f8f] transition-colors">
                       マウスを重ねると表示
                     </p>
