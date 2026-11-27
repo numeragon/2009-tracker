@@ -58,6 +58,8 @@ function FrostedTotpCode({ code }: { code: string }) {
     let particles: Array<{
       x: number;
       y: number;
+      targetX: number;
+      targetY: number;
       radius: number;
       alpha: number;
       phase: number;
@@ -69,6 +71,8 @@ function FrostedTotpCode({ code }: { code: string }) {
     let height = 0;
     let dpr = 1;
     let startedAt = 0;
+    let lastFrameAt = 0;
+    let gatherProgress = 0;
     let cancelled = false;
 
     const render = (time: number) => {
@@ -78,6 +82,14 @@ function FrostedTotpCode({ code }: { code: string }) {
 
       if (!startedAt) startedAt = time;
       const elapsed = (time - startedAt) / 1000;
+      const deltaSeconds = lastFrameAt
+        ? Math.min((time - lastFrameAt) / 1000, 0.05)
+        : 0;
+      lastFrameAt = time;
+      const group = text.closest<HTMLElement>(".group");
+      const gatherTarget = group?.matches(":hover") ? 1 : 0;
+      gatherProgress +=
+        (gatherTarget - gatherProgress) * Math.min(1, deltaSeconds * 7);
       context.setTransform(dpr, 0, 0, dpr, 0, 0);
       context.clearRect(0, 0, width, height);
       context.fillStyle = "#fff";
@@ -85,13 +97,21 @@ function FrostedTotpCode({ code }: { code: string }) {
       context.shadowBlur = 5;
 
       for (const particle of particles) {
+        const gather = gatherProgress;
+        const baseX =
+          particle.x + (particle.targetX - particle.x) * gather;
+        const baseY =
+          particle.y + (particle.targetY - particle.y) * gather;
         const x =
-          particle.x +
-          Math.sin(elapsed * particle.speed + particle.phase) * particle.driftX;
+          baseX +
+          Math.sin(elapsed * particle.speed + particle.phase) *
+            particle.driftX *
+            (1 - gather);
         const y =
-          particle.y +
+          baseY +
           Math.cos(elapsed * particle.speed * 0.73 + particle.phase) *
-            particle.driftY;
+            particle.driftY *
+            (1 - gather);
         const shimmer =
           0.72 + Math.sin(elapsed * particle.speed * 1.7 + particle.phase) * 0.2;
         context.globalAlpha = particle.alpha * shimmer;
@@ -155,12 +175,15 @@ function FrostedTotpCode({ code }: { code: string }) {
       }
 
       particles = [];
-      const targetCount = Math.min(formattedCode.replace(/\s/g, "").length * 6, 48);
+      const targetCount = Math.min(formattedCode.replace(/\s/g, "").length * 12, 96);
       for (const candidate of candidates) {
         if (
           particles.some(
             (particle) =>
-              Math.hypot(particle.x - candidate.x, particle.y - candidate.y) < 3,
+              Math.hypot(
+                particle.targetX - candidate.x,
+                particle.targetY - candidate.y,
+              ) < 3,
           )
         ) {
           continue;
@@ -177,6 +200,8 @@ function FrostedTotpCode({ code }: { code: string }) {
             particlePadding +
             candidate.y * 0.15 +
             Math.random() * bounds.height * 0.7,
+          targetX: candidate.x,
+          targetY: candidate.y,
           radius: 1.1 + Math.random() * 1.3,
           alpha: 0.68 + Math.random() * 0.32,
           phase: Math.random() * Math.PI * 2,
@@ -210,7 +235,7 @@ function FrostedTotpCode({ code }: { code: string }) {
     <div className="relative inline-block">
       <span
         ref={textRef}
-        className="inline-block font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] opacity-40 blur-[12px] select-none transition-all duration-300 group-hover:blur-[0px] group-hover:opacity-100 group-hover:select-text"
+        className="vt-totp-code inline-block font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] select-none group-hover:select-text"
       >
         {formattedCode}
       </span>

@@ -3376,6 +3376,40 @@ fn pregame_player_score(player: &Value) -> (bool, u8) {
     (!agent.is_empty(), rank)
 }
 
+fn pregame_team_members(match_data: &Value, team_key: &str) -> HashSet<String> {
+    match_data
+        .get(team_key)
+        .and_then(|team| team.get("Players"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|player| {
+            player
+                .get("Subject")
+                .and_then(Value::as_str)
+                .map(str::to_lowercase)
+        })
+        .collect()
+}
+
+fn pregame_player_is_ally(
+    puuid: &str,
+    is_self: bool,
+    team_id: &str,
+    self_team: &str,
+    ally_members: &HashSet<String>,
+    enemy_members: &HashSet<String>,
+) -> bool {
+    let puuid = puuid.to_lowercase();
+    if is_self || ally_members.contains(&puuid) {
+        return true;
+    }
+    if enemy_members.contains(&puuid) {
+        return false;
+    }
+    !self_team.is_empty() && team_id.eq_ignore_ascii_case(self_team)
+}
+
 /// Merges a team's players into `entries`. Riot can split the roster between
 /// `Teams` and `AllyTeam`/`EnemyTeam`; the enemy agent is often only filled in
 /// `EnemyTeam`, so a masked copy must not overwrite a revealed one.
@@ -3470,6 +3504,12 @@ async fn build_pregame_response(
         }
     }
 
+    // These named rosters are authoritative even when Riot omits TeamID from
+    // EnemyTeam. Falling back to "Blue" for such entries made enemies appear
+    // in the ally column whenever the local team was Blue.
+    let ally_members = pregame_team_members(mjson, "AllyTeam");
+    let enemy_members = pregame_team_members(mjson, "EnemyTeam");
+
     let puuids: Vec<String> = team_entries
         .iter()
         .filter_map(|(_, p)| p.get("Subject").and_then(|v| v.as_str()).map(String::from))
@@ -3488,11 +3528,14 @@ async fn build_pregame_response(
             continue;
         }
         let is_self = puuid.eq_ignore_ascii_case(&self_lower);
-        let is_ally = if self_team.is_empty() {
-            true
-        } else {
-            team_id.eq_ignore_ascii_case(&self_team)
-        };
+        let is_ally = pregame_player_is_ally(
+            &puuid,
+            is_self,
+            team_id,
+            &self_team,
+            &ally_members,
+            &enemy_members,
+        );
 
         let identity = p.get("PlayerIdentity");
         let account_level = identity
@@ -3643,6 +3686,30 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].1["CharacterID"], "agent-1");
         assert_eq!(entries[0].1["CharacterSelectionState"], "locked");
+    }
+
+    #[test]
+    fn enemy_roster_membership_overrides_a_missing_enemy_team_id() {
+        let match_data = serde_json::json!({
+            "AllyTeam": {
+                "TeamID": "Blue",
+                "Players": [{ "Subject": "self" }]
+            },
+            "EnemyTeam": {
+                "Players": [{ "Subject": "ENEMY-1" }]
+            }
+        });
+        let allies = pregame_team_members(&match_data, "AllyTeam");
+        let enemies = pregame_team_members(&match_data, "EnemyTeam");
+
+        assert!(pregame_player_is_ally(
+            "self", true, "Blue", "Blue", &allies, &enemies
+        ));
+        // Some pregame payloads omit EnemyTeam.TeamID. Even if a merged copy
+        // carries the local team's ID, explicit EnemyTeam membership wins.
+        assert!(!pregame_player_is_ally(
+            "enemy-1", false, "Blue", "Blue", &allies, &enemies
+        ));
     }
 
     #[test]
