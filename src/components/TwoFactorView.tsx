@@ -531,7 +531,7 @@ export function TwoFactorView() {
                       <div
                         className={`font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] select-none transition-all duration-300 ${
                           code
-                            ? "blur-[12px] opacity-45 group-hover:blur-[0px] group-hover:opacity-100 group-hover:select-text"
+                            ? "opacity-0 blur-[3px] group-hover:blur-[0px] group-hover:opacity-100 group-hover:select-text"
                             : "opacity-40"
                         }`}
                       >

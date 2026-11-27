@@ -123,15 +123,14 @@ img {
 }
 
 /*
- * Riot2FA code veil (すりガラス): the glyphs themselves become the frost.
- * The real digits are blurred into an unreadable smear, and an exact copy
- * of the glyphs is clipped to a sparse particle texture (background-clip:
- * text). The noise is thresholded (feFuncA discrete) so only its peaks
- * show: a few large, clearly visible grains with gaps between them,
- * drifting continuously inside the letter forms. Hovering the card fades
- * the grains out and sharpens the digits. The blur lives on the real text
- * itself, so the code stays unreadable whatever the compositor does with
- * backdrop-filter.
+ * Riot2FA code veil: at rest the code exists only as drifting white
+ * particles. The real digits are fully hidden (opacity 0 in the markup),
+ * and an exact copy of the glyphs is clipped to a thresholded noise
+ * texture (background-clip: text) so bright, widely spaced white grains
+ * drift inside the letter forms. Hovering the card fades the grains out
+ * while the real digits fade in, as if the particles condense back into
+ * text. With nothing but scattered grains rendered, the code cannot be
+ * read or captured at rest.
  */
 .vt-frost-text {
   position: absolute;
@@ -140,8 +139,8 @@ img {
   color: transparent;
   -webkit-text-fill-color: transparent;
   background-image:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.05' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='table' tableValues='0.55 1'/%3E%3CfeFuncG type='table' tableValues='0.55 1'/%3E%3CfeFuncB type='table' tableValues='0.55 1'/%3E%3CfeFuncA type='discrete' tableValues='0 0 0 0.5 1'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E"),
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.18' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='table' tableValues='0.55 1'/%3E%3CfeFuncG type='table' tableValues='0.55 1'/%3E%3CfeFuncB type='table' tableValues='0.55 1'/%3E%3CfeFuncA type='discrete' tableValues='0 0 0 0.3 0.6'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E");
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.1' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='table' tableValues='0.9 1'/%3E%3CfeFuncG type='table' tableValues='0.9 1'/%3E%3CfeFuncB type='table' tableValues='0.9 1'/%3E%3CfeFuncA type='discrete' tableValues='0 0 0 0.5 1'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='f'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.22' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3CfeComponentTransfer%3E%3CfeFuncR type='table' tableValues='0.9 1'/%3E%3CfeFuncG type='table' tableValues='0.9 1'/%3E%3CfeFuncB type='table' tableValues='0.9 1'/%3E%3CfeFuncA type='discrete' tableValues='0 0 0 0.4 0.8'/%3E%3C/feComponentTransfer%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23f)'/%3E%3C/svg%3E");
   background-size: 160px 160px, 120px 120px;
   background-clip: text;
   -webkit-background-clip: text;
