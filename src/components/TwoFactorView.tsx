@@ -529,8 +529,10 @@ export function TwoFactorView() {
                   <div>
                     <div className="relative inline-block">
                       <div
-                        className={`font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] select-none ${
-                          code ? "group-hover:select-text" : "opacity-40"
+                        className={`font-num text-[30px] leading-none tracking-[0.22em] text-[#ededed] select-none transition-all duration-300 ${
+                          code
+                            ? "blur-[9px] opacity-55 group-hover:blur-[0px] group-hover:opacity-100 group-hover:select-text"
+                            : "opacity-40"
                         }`}
                       >
                         {code ? formatTotpCode(code) : "--- ---"}
